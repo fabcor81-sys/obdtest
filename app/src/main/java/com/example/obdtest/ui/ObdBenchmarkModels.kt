@@ -51,6 +51,7 @@ sealed interface BenchmarkStatus {
     object Idle : BenchmarkStatus
     object Connecting : BenchmarkStatus
     object Initializing : BenchmarkStatus
+    object Warmup : BenchmarkStatus
     data class RunningTest(
         val completedRequests: Int,
         val targetRequests: Int,
@@ -91,6 +92,9 @@ data class BenchmarkMetrics(
     val elmVersion: String = "N/D",
     val protocolName: String = "N/D",
     val targetRequestCount: Int = 100,
+    val warmupRequestCount: Int = 3,
+    val warmupFirstLatencyMs: Double = 0.0,
+    val isWarmupSuccess: Boolean = true,
     val totalCommandsSent: Int = 0,
     val successCount: Int = 0,
     val ecuErrorCount: Int = 0,
@@ -119,6 +123,8 @@ data class BenchmarkMetrics(
     val successfulResponses: Int get() = successCount
     val successRatePercent: Double
         get() = if (totalCommandsSent > 0) (successCount.toDouble() / totalCommandsSent.toDouble()) * 100.0 else 0.0
+    val speedUnitLabel: String
+        get() = if (obdProfile == ObdProfile.AT_ONLY) "Cmd/s" else "PID/s"
 }
 
 data class ObdUiState(

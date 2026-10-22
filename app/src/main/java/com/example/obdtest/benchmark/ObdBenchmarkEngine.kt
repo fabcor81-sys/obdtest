@@ -124,6 +124,7 @@ class ObdBenchmarkEngine {
         obdProfile: ObdProfile = ObdProfile.AT_ONLY,
         customCommand: String = "0100\r",
         targetRequestCount: Int = 100,
+        warmupCount: Int = 3,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         onStatusUpdate: (BenchmarkStatus, String) -> Unit,
         onMetricsUpdate: (BenchmarkMetrics) -> Unit
@@ -132,7 +133,6 @@ class ObdBenchmarkEngine {
         activeSessionId = System.currentTimeMillis()
         val currentSessionId = activeSessionId
 
-        // Determinazione del Trasporto
         val deviceNameUpper = (device.name ?: "").uppercase(Locale.US)
         val isExplicitBle = transportMode == TransportMode.BLE_GATT ||
                 (transportMode == TransportMode.AUTO && (
@@ -158,11 +158,12 @@ class ObdBenchmarkEngine {
             measuredCommand = targetCommand.trim(),
             benchmarkMode = benchmarkMode,
             targetRequestCount = targetRequestCount,
+            warmupRequestCount = warmupCount,
             timeoutMs = timeoutMs
         )
 
         val samples = mutableListOf<CommandTimingSample>()
-        val testStartTimestampMs = System.currentTimeMillis()
+        val connectionStartMs = SystemClock.elapsedRealtime()
         var totalRawBytesReceived = 0L
         var totalAppBytesReceived = 0L
 
@@ -177,7 +178,7 @@ class ObdBenchmarkEngine {
                     connectClassicSocket(device)
                 } catch (e: Exception) {
                     if (transportMode == TransportMode.AUTO) {
-                        log("Connessione Classic SPP fallita (${e.message}). Tentativo di Fallback su BLE GATT...")
+                        log("Connessione Classic SPP fallita (${e.message}). Fallback su BLE GATT...")
                         isBleMode = true
                         connectGattDevice(context.applicationContext, device)
                     } else {
@@ -200,6 +201,16 @@ class ObdBenchmarkEngine {
                 initLogEntries.add(entry)
                 log("[INIT] $entry")
                 return resp
+            }
+
+            fun verifyInitResp(cmdName: String, resp: String): Boolean {
+                val clean = ObdResponseParser.cleanRawResponse(resp, cmdName).uppercase(Locale.US)
+                val hasPrompt = resp.contains(">")
+                val isOk = hasPrompt && clean.isNotBlank() && !clean.contains("ERROR") && !clean.contains("?")
+                if (!isOk) {
+                    log("ERRORE INIZIALIZZAZIONE [$cmdName]: risposta non valida -> '$clean'", isError = true)
+                }
+                return isOk
             }
 
             val elmVersion: String
@@ -238,20 +249,22 @@ class ObdBenchmarkEngine {
                 ObdProfile.LOTUS_ABS -> {
                     log("Inizializzazione ECU ABS Lotus (Sequenza inderogabile: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5)...")
                     val atzResp = sendInitCmd("AT Z\r", 3000L)
-                    kotlinx.coroutines.delay(800) // Riavvio post ATZ
+                    kotlinx.coroutines.delay(800)
                     clearBuffer()
 
                     elmVersion = if (atzResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atzResp, "AT Z") else "ELM327"
 
-                    sendInitCmd("AT L1\r")
-                    val respSH = sendInitCmd("AT SH 812BF1\r")
-                    sendInitCmd("AT WM 812BF13E\r")
-                    val respSP = sendInitCmd("AT SP 5\r")
+                    val respL1 = sendInitCmd("AT L1\r")
+                    if (!verifyInitResp("AT L1", respL1)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT L1")
 
-                    val isInitOk = !respSH.contains("ERROR") && !respSP.contains("ERROR")
-                    if (!isInitOk) {
-                        log("ATTENZIONE: La ECU ABS Lotus ha restituito errori durante la sequenza di inizializzazione KWP2000!", isError = true)
-                    }
+                    val respSH = sendInitCmd("AT SH 812BF1\r")
+                    if (!verifyInitResp("AT SH 812BF1", respSH)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SH 812BF1")
+
+                    val respWM = sendInitCmd("AT WM 812BF13E\r")
+                    if (!verifyInitResp("AT WM 812BF13E", respWM)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT WM 812BF13E")
+
+                    val respSP = sendInitCmd("AT SP 5\r")
+                    if (!verifyInitResp("AT SP 5", respSP)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SP 5")
 
                     protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
                 }
@@ -266,14 +279,59 @@ class ObdBenchmarkEngine {
 
             coroutineContext.ensureActive()
 
-            log("=== INIZIO BENCHMARK METROLOGICO [${obdProfile.label}] ($targetRequestCount richieste - Comando: $targetCommand) ===")
+            // FASE DI RISCALDAMENTO PRELIMINARE
+            log("=== INIZIO FASE DI RISCALDAMENTO ($warmupCount comandi preliminari) ===")
+            onStatusUpdate(BenchmarkStatus.Warmup, "Riscaldamento in corso ($warmupCount comandi preliminari)...")
+
+            var warmupFirstLatency = 0.0
+            var warmupSuccesses = 0
+
+            for (w in 1..warmupCount) {
+                if (!isRunning) break
+                coroutineContext.ensureActive()
+
+                val warmupSample = executeCommandTimed(
+                    sampleIndex = -w,
+                    profile = obdProfile,
+                    command = targetCommand,
+                    previousT0Nanos = 0L,
+                    timeoutMs = timeoutMs
+                )
+
+                if (w == 1) {
+                    warmupFirstLatency = warmupSample.totalRoundTripMs
+                }
+
+                if (warmupSample.isSuccess) {
+                    warmupSuccesses++
+                }
+
+                log("[WARMUP $w/$warmupCount] Status: ${warmupSample.status.name} | Latenza: ${String.format(Locale.US, "%.1f", warmupSample.totalRoundTripMs)}ms")
+            }
+
+            val isWarmupSuccess = (warmupSuccesses > 0) || (obdProfile == ObdProfile.AT_ONLY)
+            metrics = metrics.copy(
+                warmupFirstLatencyMs = warmupFirstLatency,
+                isWarmupSuccess = isWarmupSuccess
+            )
+            onMetricsUpdate(metrics)
+
+            if (!isWarmupSuccess && obdProfile != ObdProfile.AT_ONLY) {
+                log("ATTENZIONE: La fase di riscaldamento ha evidenziato mancata risposta dalla ECU ABS/OBD!", isError = true)
+            }
+
+            coroutineContext.ensureActive()
+
+            // FASE MISURATA DEL BENCHMARK (ISOLATA DAI TEMPI PRECEDENTI)
+            log("=== INIZIO FASE MISURATA [${obdProfile.label}] ($targetRequestCount richieste - Comando: $targetCommand) ===")
             onStatusUpdate(
                 BenchmarkStatus.RunningTest(0, targetRequestCount, 0.0, 0.0),
-                "Avvio benchmark (${obdProfile.label})..."
+                "Avvio misura ($targetRequestCount richieste)..."
             )
 
+            val testStartNanos = SystemClock.elapsedRealtimeNanos()
             var lastT0Nanos = 0L
-            var lastUiUpdateMs = System.currentTimeMillis()
+            var lastUiUpdateMs = SystemClock.elapsedRealtime()
 
             for (i in 1..targetRequestCount) {
                 if (!isRunning || currentSessionId != activeSessionId) break
@@ -295,16 +353,17 @@ class ObdBenchmarkEngine {
                     totalAppBytesReceived += sample.parsedResponse.length
                 }
 
-                val nowMs = System.currentTimeMillis()
-                val elapsedSec = (nowMs - testStartTimestampMs) / 1000.0
-                val currentPidsPerSec = if (elapsedSec > 0) samples.count { it.isSuccess } / elapsedSec else 0.0
+                val nowMs = SystemClock.elapsedRealtime()
+                val elapsedSec = ((SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000_000.0).coerceAtLeast(0.001)
+                val currentPidsPerSec = samples.count { it.isSuccess } / elapsedSec
 
-                if (nowMs - lastUiUpdateMs > 200 || i == targetRequestCount) {
+                if (nowMs - lastUiUpdateMs > 250 || i == targetRequestCount) {
                     lastUiUpdateMs = nowMs
+                    val currentDurationMs = (SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000L
                     val updatedMetrics = calculateMetrics(
                         baseMetrics = metrics,
                         samples = samples,
-                        totalDurationMs = nowMs - testStartTimestampMs,
+                        totalDurationMs = currentDurationMs,
                         totalRawBytesReceived = totalRawBytesReceived,
                         totalAppBytesReceived = totalAppBytesReceived,
                         isPartial = false
@@ -319,16 +378,16 @@ class ObdBenchmarkEngine {
                             currentPidsPerSec = currentPidsPerSec,
                             lastLatencyMs = sample.totalRoundTripMs
                         ),
-                        "Progresso: $i/$targetRequestCount [SUCCESS: ${metrics.successCount}, ERR: ${metrics.ecuErrorCount + metrics.adapterErrorCount + metrics.timeoutCount}] (${String.format(Locale.US, "%.1f", currentPidsPerSec)} cmd/s - Latenza: ${String.format(Locale.US, "%.1f", sample.totalRoundTripMs)} ms)"
+                        "Progresso: $i/$targetRequestCount [SUCCESS: ${metrics.successCount}, ERR: ${metrics.ecuErrorCount + metrics.adapterErrorCount + metrics.timeoutCount}] (${String.format(Locale.US, "%.1f", currentPidsPerSec)} ${metrics.speedUnitLabel} - Latenza: ${String.format(Locale.US, "%.1f", sample.totalRoundTripMs)} ms)"
                     )
                 }
             }
 
-            val finalDurationMs = System.currentTimeMillis() - testStartTimestampMs
+            val finalMeasuredDurationMs = (SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000L
             metrics = calculateMetrics(
                 baseMetrics = metrics,
                 samples = samples,
-                totalDurationMs = finalDurationMs,
+                totalDurationMs = finalMeasuredDurationMs,
                 totalRawBytesReceived = totalRawBytesReceived,
                 totalAppBytesReceived = totalAppBytesReceived,
                 isPartial = false
@@ -336,6 +395,8 @@ class ObdBenchmarkEngine {
 
             log("=== BENCHMARK COMPLETATO ===")
             log("Risultati per ${metrics.deviceName} (${obdProfile.label}):")
+            log(" - Durata Fase Misurata: ${metrics.testDurationMs} ms")
+            log(" - Riscaldamento: 1° Latenza: ${String.format(Locale.US, "%.1f", metrics.warmupFirstLatencyMs)} ms | Esito: ${if (metrics.isWarmupSuccess) "OK" else "FALLITO"}")
             log(" - Trasporto: ${metrics.effectiveTransport.label}")
             log(" - Firmware: ${metrics.elmVersion}")
             log(" - Campioni: SUCCESS: ${metrics.successCount}/${metrics.totalCommandsSent} (${String.format(Locale.US, "%.1f", metrics.successRatePercent)}%) | ECU_ERR: ${metrics.ecuErrorCount} | ADAPTER_ERR: ${metrics.adapterErrorCount} | TIMEOUT: ${metrics.timeoutCount} | INCOMPLETE: ${metrics.incompleteCount}")
@@ -350,10 +411,11 @@ class ObdBenchmarkEngine {
             metrics
         } catch (e: CancellationException) {
             log("Benchmark annullato dall'utente.", isError = false)
+            val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
             val partialMetrics = calculateMetrics(
                 baseMetrics = metrics,
                 samples = samples,
-                totalDurationMs = System.currentTimeMillis() - testStartTimestampMs,
+                totalDurationMs = currentDurationMs,
                 totalRawBytesReceived = totalRawBytesReceived,
                 totalAppBytesReceived = totalAppBytesReceived,
                 isPartial = true
@@ -365,10 +427,11 @@ class ObdBenchmarkEngine {
             val errLog = "ERRORE APPLICATIVO CRITICO: ${e.javaClass.simpleName} - ${e.message}\n${Log.getStackTraceString(e)}"
             log(errLog, isError = true)
 
+            val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
             val partialMetrics = calculateMetrics(
                 baseMetrics = metrics,
                 samples = samples,
-                totalDurationMs = System.currentTimeMillis() - testStartTimestampMs,
+                totalDurationMs = currentDurationMs,
                 totalRawBytesReceived = totalRawBytesReceived,
                 totalAppBytesReceived = totalAppBytesReceived,
                 isPartial = true
@@ -414,7 +477,6 @@ class ObdBenchmarkEngine {
 
         val commandBytes = command.toByteArray(Charsets.US_ASCII)
 
-        // T0: Monotonic Clock prima della chiamata di scrittura BLE
         val t0Nanos = SystemClock.elapsedRealtimeNanos()
 
         val writeType = if ((rxChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
@@ -434,7 +496,6 @@ class ObdBenchmarkEngine {
             gatt.writeCharacteristic(rxChar)
         }
 
-        // T1: Monotonic Clock subito dopo l'invocazione di scrittura
         val t1Nanos = SystemClock.elapsedRealtimeNanos()
 
         if (!writeSuccess) {
@@ -740,7 +801,7 @@ class ObdBenchmarkEngine {
         val intervals = samples.drop(1).map { it.interRequestIntervalMs }.filter { it > 0 }
         val avgInterval = if (intervals.isNotEmpty()) intervals.average() else 0.0
 
-        val totalSec = (totalDurationMs / 1000.0).coerceAtLeast(0.1)
+        val totalSec = (totalDurationMs / 1000.0).coerceAtLeast(0.001)
         val pidsPerSec = successCount / totalSec
         val appBytesPerSec = totalAppBytesReceived / totalSec
         val rawBytesPerSec = totalRawBytesReceived / totalSec
@@ -767,7 +828,7 @@ class ObdBenchmarkEngine {
             testDurationMs = totalDurationMs,
             isPartialSession = isPartial,
             sessionLogs = _logs.value,
-            rawSamples = samples
+            rawSamples = samples.toList()
         )
     }
 
@@ -1171,6 +1232,9 @@ class ObdBenchmarkEngine {
             writer.println("# Firmware ELM,${escapeCsvField(metrics.elmVersion)}")
             writer.println("# Protocollo Rilevato,${escapeCsvField(metrics.protocolName)}")
             writer.println("# Timeout Configurato (ms),${metrics.timeoutMs}")
+            writer.println("# Riscaldamento Richieste,${metrics.warmupRequestCount}")
+            writer.println("# Riscaldamento 1° Latenza (ms),${String.format(Locale.US, "%.3f", metrics.warmupFirstLatencyMs)}")
+            writer.println("# Riscaldamento Esito,${if (metrics.isWarmupSuccess) "SUCCESS" else "FALLITO"}")
             writer.println("# Campioni Target,${metrics.targetRequestCount}")
             writer.println("# Campioni Effettivi,${metrics.totalCommandsSent}")
             writer.println("# Risposte SUCCESS,${metrics.successCount}")
@@ -1188,10 +1252,10 @@ class ObdBenchmarkEngine {
             writer.println("# Deviazione Standard (ms),${String.format(Locale.US, "%.3f", metrics.stdDevMs)}")
             writer.println("# Jitter (ms),${String.format(Locale.US, "%.3f", metrics.jitterMs)}")
             writer.println("# Intervallo Medio Inter-Richiesta (ms),${String.format(Locale.US, "%.3f", metrics.avgInterRequestIntervalMs)}")
-            writer.println("# Velocità (PID/s),${String.format(Locale.US, "%.2f", metrics.commandsPerSecond)}")
+            writer.println("# Velocità (${metrics.speedUnitLabel}),${String.format(Locale.US, "%.2f", metrics.commandsPerSecond)}")
             writer.println("# Throughput Applicativo (B/s),${String.format(Locale.US, "%.2f", metrics.appBytesPerSecond)}")
             writer.println("# Throughput Grezzo (B/s),${String.format(Locale.US, "%.2f", metrics.rawBytesPerSecond)}")
-            writer.println("# Durata Totale Test (ms),${metrics.testDurationMs}")
+            writer.println("# Durata Fase Misurata (ms),${metrics.testDurationMs}")
             writer.println("#")
             writer.println("# --- INIZIALIZZAZIONE AUTOMATICA SCRIPT ---")
             if (metrics.initLog.isNotEmpty()) {
