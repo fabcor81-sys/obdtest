@@ -96,11 +96,21 @@ object ObdResponseParser {
             }
         }
 
-        // 5. Modalità OBD / ECU (PID 0100 o PID Mode 01)
+        // 5. Modalità ECU ABS Lotus vs OBD Generico
         val cmdClean = commandSent.trim().replace("\r", "").replace(" ", "").uppercase(Locale.US)
 
+        if (profile == ObdProfile.LOTUS_ABS) {
+            // Profilo ECU ABS Lotus: la risposta non è necessariamente la solita 41 00 di una ECU motore standard.
+            // Se la ECU ABS risponde con 4100 o con byte esadecimali non-vuoti, consideriamo la risposta ricevuta.
+            return if (cleaned.isNotBlank()) {
+                ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = cleaned)
+            } else {
+                ParseResult(SampleStatus.ECU_ERROR, cleaned)
+            }
+        }
+
         if (cmdClean == "0100") {
-            // Per 0100 ci aspettiamo "41 00" seguito da 4 byte esadecimali dati (8 caratteri hex)
+            // Per OBD Generico PID 0100 ci aspettiamo "41 00" seguito da 4 byte esadecimali dati (8 caratteri hex)
             val hexOnly = upperCleaned.replace("SEARCHING...", "").replace(" ", "")
             val expectedHeader = "4100"
 

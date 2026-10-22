@@ -23,6 +23,20 @@ class ObdResponseParserTest {
     }
 
     @Test
+    fun testLotusAbsResponse() {
+        val raw = "0100\r41 00 BE 3F A8 13\r\n>"
+        val result = ObdResponseParser.parseResponse(
+            profile = ObdProfile.LOTUS_ABS,
+            commandSent = "0100\r",
+            rawResponse = raw,
+            hasPrompt = true,
+            bytesReceived = raw.length
+        )
+
+        assertEquals(SampleStatus.SUCCESS, result.status)
+    }
+
+    @Test
     fun testTruncatedObd0100Response() {
         val raw = "41 00 BE>"
         val result = ObdResponseParser.parseResponse(

@@ -14,10 +14,26 @@ enum class TransportMode(val label: String) {
     BLE_GATT("Bluetooth Low Energy (GATT)")
 }
 
-enum class ObdProfile(val label: String) {
-    AT_ONLY("AT-Only (Latenza Chip ATI)"),
-    GENERIC_AUTO("OBD Standard (Auto Protocol AT SP 0)"),
-    KWP_FAST_FCA("KWP2000 Fast Init FCA (Header 812BF1)")
+enum class ObdProfile(
+    val label: String,
+    val defaultCommand: String,
+    val description: String
+) {
+    AT_ONLY(
+        label = "AT-Only (ATI)",
+        defaultCommand = "ATI\r",
+        description = "Latenza chip/Bluetooth dell'adattatore (senza ECU)"
+    ),
+    GENERIC_AUTO(
+        label = "OBD Generico (Auto Protocol)",
+        defaultCommand = "0100\r",
+        description = "Inizializzazione standard OBD2 AT SP 0"
+    ),
+    LOTUS_ABS(
+        label = "ECU ABS Lotus (KWP Fast 812BF1)",
+        defaultCommand = "0100\r",
+        description = "Sequenza specifica: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5"
+    )
 }
 
 enum class BenchmarkMode(val label: String, val command: String) {
@@ -70,6 +86,7 @@ data class BenchmarkMetrics(
     val deviceAddress: String = "",
     val effectiveTransport: TransportMode = TransportMode.AUTO,
     val obdProfile: ObdProfile = ObdProfile.AT_ONLY,
+    val measuredCommand: String = "ATI\r",
     val benchmarkMode: BenchmarkMode = BenchmarkMode.AT_ONLY,
     val elmVersion: String = "N/D",
     val protocolName: String = "N/D",
@@ -109,6 +126,7 @@ data class ObdUiState(
     val selectedDevice: BluetoothDeviceItem? = null,
     val selectedTransportMode: TransportMode = TransportMode.AUTO,
     val selectedProfile: ObdProfile = ObdProfile.AT_ONLY,
+    val customCommand: String = "0100\r",
     val selectedRequestCount: Int = 100,
     val isScanning: Boolean = false,
     val isBluetoothEnabled: Boolean = true,

@@ -17,9 +17,9 @@ class ObdViewModelTest {
     @Test
     fun testObdProfileSelection() {
         var state = ObdUiState()
-        state = state.copy(selectedProfile = ObdProfile.KWP_FAST_FCA)
+        state = state.copy(selectedProfile = ObdProfile.LOTUS_ABS)
 
-        assertEquals(ObdProfile.KWP_FAST_FCA, state.selectedProfile)
+        assertEquals(ObdProfile.LOTUS_ABS, state.selectedProfile)
     }
 
     @Test

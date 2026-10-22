@@ -23,6 +23,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
 
+// Palette Racing Giallo e Nero
+val RacingBackground = Color(0xFF0B0B0B)
+val RacingSurface = Color(0xFF181818)
+val RacingSurfaceSecondary = Color(0xFF242424)
+val RacingYellow = Color(0xFFFFD600)
+val RacingText = Color(0xFFF5F5F5)
+val RacingTextSecondary = Color(0xFFBDBDBD)
+val RacingError = Color(0xFFE53935)
+val RacingSuccess = Color(0xFF00E676)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ObdBenchmarkScreen(
@@ -34,6 +44,7 @@ fun ObdBenchmarkScreen(
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
+    onCustomCommandChange: (String) -> Unit,
     onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
@@ -43,28 +54,34 @@ fun ObdBenchmarkScreen(
     modifier: Modifier = Modifier
 ) {
     Scaffold(
+        containerColor = RacingBackground,
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text(
                             text = "OBD2 Benchmark Metrologico",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 20.sp,
+                            color = RacingYellow
                         )
                         Text(
-                            text = "Misura latenza, percentili (P50/P95/P99) e stabilità",
+                            text = "Motorsport Performance & Latenza Adattatori OBD2",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = RacingTextSecondary
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    containerColor = RacingSurface
                 ),
                 actions = {
                     IconButton(onClick = onRefreshDevices) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Aggiorna Dispositivi")
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Aggiorna Dispositivi",
+                            tint = RacingYellow
+                        )
                     }
                 }
             )
@@ -74,9 +91,10 @@ fun ObdBenchmarkScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(RacingBackground)
                 .padding(innerPadding)
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             if (!uiState.hasPermissions) {
                 PermissionRequiredCard(onRequestPermissions = onRequestPermissions)
@@ -104,10 +122,12 @@ fun ObdBenchmarkScreen(
                     statusMessage = uiState.statusMessage,
                     selectedTransportMode = uiState.selectedTransportMode,
                     selectedProfile = uiState.selectedProfile,
+                    customCommand = uiState.customCommand,
                     selectedRequestCount = uiState.selectedRequestCount,
                     isDeviceSelected = uiState.selectedDevice != null,
                     onSelectTransportMode = onSelectTransportMode,
                     onSelectProfile = onSelectProfile,
+                    onCustomCommandChange = onCustomCommandChange,
                     onSelectRequestCount = onSelectRequestCount,
                     onStartTest = onStartTest,
                     onStopTest = onStopTest
@@ -148,7 +168,7 @@ fun ObdBenchmarkScreen(
 fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer
+            containerColor = RacingSurfaceSecondary
         ),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -161,26 +181,27 @@ fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
                 Icons.Default.BluetoothDisabled,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.onErrorContainer
+                tint = RacingError
             )
             Text(
                 text = "Permessi Bluetooth e Posizione Richiesti",
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.onErrorContainer
+                color = RacingText
             )
             Text(
                 text = "L'app richiede l'accesso al Bluetooth per scansionare e comunicare con gli adattatori OBD2.",
                 textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onErrorContainer
+                color = RacingTextSecondary
             )
             Button(
                 onClick = onRequestPermissions,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.onError
+                    containerColor = RacingYellow,
+                    contentColor = RacingBackground
                 )
             ) {
-                Text("Concedi Permessi")
+                Text("Concedi Permessi", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -190,7 +211,7 @@ fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
 fun BluetoothDisabledCard(onRefreshDevices: () -> Unit) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            containerColor = RacingSurfaceSecondary
         ),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -203,21 +224,27 @@ fun BluetoothDisabledCard(onRefreshDevices: () -> Unit) {
                 Icons.Default.BluetoothDisabled,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.primary
+                tint = RacingYellow
             )
             Text(
                 text = "Bluetooth Spento",
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.onSurface
+                color = RacingText
             )
             Text(
                 text = "Attiva il Bluetooth nelle impostazioni del tuo smartphone per proseguire.",
                 textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = RacingTextSecondary
             )
-            Button(onClick = onRefreshDevices) {
-                Text("Ricontrolla")
+            Button(
+                onClick = onRefreshDevices,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = RacingYellow,
+                    contentColor = RacingBackground
+                )
+            ) {
+                Text("Ricontrolla", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -240,10 +267,10 @@ fun DeviceSelectorCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            containerColor = RacingSurface
         )
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -251,9 +278,9 @@ fun DeviceSelectorCard(
             ) {
                 Text(
                     text = "DISPOSITIVO OBD2 BLUETOOTH",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = RacingYellow
                 )
 
                 TextButton(
@@ -265,14 +292,20 @@ fun DeviceSelectorCard(
                     if (isScanning) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp
+                            strokeWidth = 2.dp,
+                            color = RacingError
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Ferma Scansione", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                        Text("Ferma Scansione", fontSize = 11.sp, color = RacingError)
                     } else {
-                        Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(
+                            Icons.AutoMirrored.Filled.BluetoothSearching,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = RacingYellow
+                        )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Scansiona Dispositivi", fontSize = 11.sp)
+                        Text("Scansiona Dispositivi", fontSize = 11.sp, color = RacingYellow)
                     }
                 }
             }
@@ -293,9 +326,17 @@ fun DeviceSelectorCard(
                         Icon(
                             Icons.Default.Bluetooth,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = RacingYellow
                         )
                     },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = RacingText,
+                        unfocusedTextColor = RacingText,
+                        focusedBorderColor = RacingYellow,
+                        unfocusedBorderColor = RacingSurfaceSecondary,
+                        focusedContainerColor = RacingSurfaceSecondary,
+                        unfocusedContainerColor = RacingSurfaceSecondary
+                    ),
                     modifier = Modifier
                         .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth()
@@ -303,11 +344,12 @@ fun DeviceSelectorCard(
 
                 ExposedDropdownMenu(
                     expanded = expanded && !isTesting,
-                    onDismissRequest = { expanded = false }
+                    onDismissRequest = { expanded = false },
+                    modifier = Modifier.background(RacingSurfaceSecondary)
                 ) {
                     if (devices.isEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Nessun dispositivo trovato") },
+                            text = { Text("Nessun dispositivo trovato", color = RacingTextSecondary) },
                             onClick = {
                                 expanded = false
                                 onRefreshDevices()
@@ -318,11 +360,11 @@ fun DeviceSelectorCard(
                             DropdownMenuItem(
                                 text = {
                                     Column {
-                                        Text(device.name, fontWeight = FontWeight.SemiBold)
+                                        Text(device.name, fontWeight = FontWeight.SemiBold, color = RacingText)
                                         Text(
                                             device.address,
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            fontSize = 11.sp,
+                                            color = RacingTextSecondary
                                         )
                                     }
                                 },
@@ -331,7 +373,11 @@ fun DeviceSelectorCard(
                                     expanded = false
                                 },
                                 leadingIcon = {
-                                    Icon(Icons.Default.BluetoothConnected, contentDescription = null)
+                                    Icon(
+                                        Icons.Default.BluetoothConnected,
+                                        contentDescription = null,
+                                        tint = RacingYellow
+                                    )
                                 }
                             )
                         }
@@ -348,10 +394,12 @@ fun TestControlCard(
     statusMessage: String,
     selectedTransportMode: TransportMode,
     selectedProfile: ObdProfile,
+    customCommand: String,
     selectedRequestCount: Int,
     isDeviceSelected: Boolean,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
+    onCustomCommandChange: (String) -> Unit,
     onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit
@@ -364,18 +412,18 @@ fun TestControlCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
+            containerColor = RacingSurface
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
                 text = "TIPO DI TRASPORTO BLUETOOTH",
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                fontWeight = FontWeight.ExtraBold,
+                color = RacingYellow
             )
 
             Row(
@@ -386,7 +434,11 @@ fun TestControlCard(
                     FilterChip(
                         selected = selectedTransportMode == mode,
                         onClick = { if (!isTesting) onSelectTransportMode(mode) },
-                        label = { Text(mode.label, fontSize = 10.sp) },
+                        label = { Text(mode.label, fontSize = 10.sp, color = if (selectedTransportMode == mode) RacingBackground else RacingText) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = RacingYellow,
+                            containerColor = RacingSurfaceSecondary
+                        ),
                         enabled = !isTesting,
                         modifier = Modifier.weight(1f)
                     )
@@ -396,8 +448,8 @@ fun TestControlCard(
             Text(
                 text = "PROFILO OBD / PROTOCOLLO",
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                fontWeight = FontWeight.ExtraBold,
+                color = RacingYellow
             )
 
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -405,9 +457,47 @@ fun TestControlCard(
                     FilterChip(
                         selected = selectedProfile == profile,
                         onClick = { if (!isTesting) onSelectProfile(profile) },
-                        label = { Text(profile.label, fontSize = 11.sp) },
+                        label = { Text(profile.label, fontSize = 11.sp, color = if (selectedProfile == profile) RacingBackground else RacingText) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = RacingYellow,
+                            containerColor = RacingSurfaceSecondary
+                        ),
                         enabled = !isTesting,
                         modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            if (selectedProfile == ObdProfile.LOTUS_ABS) {
+                Text(
+                    text = "⚠️ Profilo Lotus ABS: Sequenza ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5. Verificare il supporto per il comando '0100' o personalizzare sotto.",
+                    fontSize = 10.sp,
+                    color = RacingYellow
+                )
+            }
+
+            if (selectedProfile != ObdProfile.AT_ONLY) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Comando Misurato:",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = RacingText
+                    )
+                    OutlinedTextField(
+                        value = customCommand,
+                        onValueChange = onCustomCommandChange,
+                        singleLine = true,
+                        enabled = !isTesting,
+                        textStyle = LocalTextStyle.current.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = RacingYellow
+                        ),
+                        modifier = Modifier.width(120.dp)
                     )
                 }
             }
@@ -415,8 +505,8 @@ fun TestControlCard(
             Text(
                 text = "NUMERO DI CAMPIONI",
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                fontWeight = FontWeight.ExtraBold,
+                color = RacingYellow
             )
 
             Row(
@@ -427,14 +517,18 @@ fun TestControlCard(
                     FilterChip(
                         selected = selectedRequestCount == count,
                         onClick = { if (!isTesting) onSelectRequestCount(count) },
-                        label = { Text("$count campioni") },
+                        label = { Text("$count campioni", fontSize = 11.sp, color = if (selectedRequestCount == count) RacingBackground else RacingText) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = RacingYellow,
+                            containerColor = RacingSurfaceSecondary
+                        ),
                         enabled = !isTesting,
                         modifier = Modifier.weight(1f)
                     )
                 }
             }
 
-            HorizontalDivider()
+            HorizontalDivider(color = RacingSurfaceSecondary)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -445,13 +539,15 @@ fun TestControlCard(
                     text = statusMessage,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium,
+                    color = RacingText,
                     modifier = Modifier.weight(1f)
                 )
 
                 if (isTesting) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp
+                        strokeWidth = 2.dp,
+                        color = RacingYellow
                     )
                 }
             }
@@ -460,6 +556,8 @@ fun TestControlCard(
                 val progress = status.completedRequests.toFloat() / status.targetRequests.toFloat()
                 LinearProgressIndicator(
                     progress = { progress },
+                    color = RacingYellow,
+                    trackColor = RacingSurfaceSecondary,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -472,23 +570,30 @@ fun TestControlCard(
                     Button(
                         onClick = onStopTest,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
+                            containerColor = RacingError,
+                            contentColor = RacingText
                         ),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.Stop, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("INTERROMP BENCHMARK")
+                        Text("ARRESTA BENCHMARK (STOP EMERGENCY)", fontWeight = FontWeight.Bold)
                     }
                 } else {
                     Button(
                         onClick = onStartTest,
                         enabled = isDeviceSelected,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RacingYellow,
+                            contentColor = RacingBackground,
+                            disabledContainerColor = RacingSurfaceSecondary,
+                            disabledContentColor = RacingTextSecondary
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.Speed, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("AVVIA BENCHMARK ($selectedRequestCount RICHIESTE)")
+                        Text("AVVIA BENCHMARK ($selectedRequestCount RICHIESTE)", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -506,11 +611,11 @@ fun CurrentMetricsCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
+            containerColor = RacingSurface
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
@@ -523,12 +628,12 @@ fun CurrentMetricsCard(
                         text = "RISULTATI: ${metrics.deviceName} ${if (metrics.isPartialSession) "[PARZIALE]" else ""}",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        color = RacingYellow
                     )
                     Text(
-                        text = "Trasporto: ${metrics.effectiveTransport.label} | Profilo: ${metrics.obdProfile.label}",
+                        text = "Trasporto: ${metrics.effectiveTransport.label} | Profilo: ${metrics.obdProfile.label} (${metrics.measuredCommand})",
                         fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        color = RacingTextSecondary
                     )
                 }
 
@@ -536,11 +641,11 @@ fun CurrentMetricsCard(
                     text = metrics.elmVersion,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = RacingYellow
                 )
             }
 
-            HorizontalDivider()
+            HorizontalDivider(color = RacingSurfaceSecondary)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -559,7 +664,7 @@ fun CurrentMetricsCard(
                 )
             }
 
-            HorizontalDivider()
+            HorizontalDivider(color = RacingSurfaceSecondary)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -587,13 +692,13 @@ fun CurrentMetricsCard(
                 )
             }
 
-            HorizontalDivider()
+            HorizontalDivider(color = RacingSurfaceSecondary)
 
             Text(
                 text = "CLASSIFICAZIONE RISPOSTE:",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
+                color = RacingText
             )
 
             Row(
@@ -603,23 +708,23 @@ fun CurrentMetricsCard(
                 Text(
                     text = "OK: ${metrics.successCount}",
                     fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF2E7D32)
+                    fontWeight = FontWeight.Bold,
+                    color = RacingSuccess
                 )
                 Text(
                     text = "ECU ERR: ${metrics.ecuErrorCount}",
                     fontSize = 11.sp,
-                    color = if (metrics.ecuErrorCount > 0) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onPrimaryContainer
+                    color = if (metrics.ecuErrorCount > 0) RacingError else RacingTextSecondary
                 )
                 Text(
                     text = "ADAPTER ERR: ${metrics.adapterErrorCount}",
                     fontSize = 11.sp,
-                    color = if (metrics.adapterErrorCount > 0) Color(0xFFE65100) else MaterialTheme.colorScheme.onPrimaryContainer
+                    color = if (metrics.adapterErrorCount > 0) RacingYellow else RacingTextSecondary
                 )
                 Text(
                     text = "TIMEOUT: ${metrics.timeoutCount}",
                     fontSize = 11.sp,
-                    color = if (metrics.timeoutCount > 0) Color(0xFFC62828) else MaterialTheme.colorScheme.onPrimaryContainer
+                    color = if (metrics.timeoutCount > 0) RacingError else RacingTextSecondary
                 )
             }
 
@@ -630,6 +735,9 @@ fun CurrentMetricsCard(
                 ) {
                     OutlinedButton(
                         onClick = onExportCsv,
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = RacingYellow
+                        ),
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -640,13 +748,14 @@ fun CurrentMetricsCard(
                     Button(
                         onClick = onSaveComparison,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
+                            containerColor = RacingYellow,
+                            contentColor = RacingBackground
                         ),
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(Icons.Default.Bookmark, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Salva Riferimento", fontSize = 12.sp)
+                        Text("Salva Riferimento", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -661,18 +770,18 @@ fun MetricItem(label: String, value: String, subValue: String) {
             text = label,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+            color = RacingTextSecondary
         )
         Text(
             text = value,
             fontSize = 20.sp,
             fontWeight = FontWeight.ExtraBold,
-            color = MaterialTheme.colorScheme.onPrimaryContainer
+            color = RacingYellow
         )
         Text(
             text = subValue,
             fontSize = 10.sp,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+            color = RacingText
         )
     }
 }
@@ -684,13 +793,13 @@ fun MetricItemSmall(label: String, value: String) {
             text = label,
             fontSize = 9.sp,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+            color = RacingTextSecondary
         )
         Text(
             text = value,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onPrimaryContainer
+            color = RacingText
         )
     }
 }
@@ -717,11 +826,11 @@ fun ComparisonCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+            containerColor = RacingSurfaceSecondary
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
@@ -732,12 +841,12 @@ fun ComparisonCard(
                 Text(
                     text = "CONFRONTO PRESTAZIONI",
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                    fontWeight = FontWeight.ExtraBold,
+                    color = RacingYellow
                 )
 
                 TextButton(onClick = onClearComparison) {
-                    Text("Cancella", fontSize = 12.sp)
+                    Text("Cancella", fontSize = 12.sp, color = RacingTextSecondary)
                 }
             }
 
@@ -746,34 +855,34 @@ fun ComparisonCard(
                     text = "⚠️ Avviso: I test usano configurazioni o trasporti differenti (${baselineMetrics.effectiveTransport.label}/${baselineMetrics.obdProfile.label} vs ${currentMetrics.effectiveTransport.label}/${currentMetrics.obdProfile.label})",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.error
+                    color = RacingError
                 )
             }
 
-            HorizontalDivider()
+            HorizontalDivider(color = RacingSurface)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("RIFERIMENTO (${baselineMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    Text("P50: ${String.format(Locale.US, "%.1f", baselineMetrics.p50Ms)} ms", fontSize = 11.sp)
-                    Text("Successo: ${String.format(Locale.US, "%.1f", baselineMetrics.successRatePercent)}%", fontSize = 10.sp)
-                    Text("${String.format(Locale.US, "%.1f", baselineMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold)
+                    Text("RIFERIMENTO (${baselineMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
+                    Text("P50: ${String.format(Locale.US, "%.1f", baselineMetrics.p50Ms)} ms", fontSize = 11.sp, color = RacingText)
+                    Text("Successo: ${String.format(Locale.US, "%.1f", baselineMetrics.successRatePercent)}%", fontSize = 10.sp, color = RacingTextSecondary)
+                    Text("${String.format(Locale.US, "%.1f", baselineMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow)
                 }
 
-                Text("VS", fontWeight = FontWeight.Black, fontSize = 16.sp)
+                Text("VS", fontWeight = FontWeight.Black, fontSize = 16.sp, color = RacingYellow)
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("ATTUALE (${currentMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    Text("P50: ${String.format(Locale.US, "%.1f", currentMetrics.p50Ms)} ms", fontSize = 11.sp)
-                    Text("Successo: ${String.format(Locale.US, "%.1f", currentMetrics.successRatePercent)}%", fontSize = 10.sp)
-                    Text("${String.format(Locale.US, "%.1f", currentMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold)
+                    Text("ATTUALE (${currentMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
+                    Text("P50: ${String.format(Locale.US, "%.1f", currentMetrics.p50Ms)} ms", fontSize = 11.sp, color = RacingText)
+                    Text("Successo: ${String.format(Locale.US, "%.1f", currentMetrics.successRatePercent)}%", fontSize = 10.sp, color = RacingTextSecondary)
+                    Text("${String.format(Locale.US, "%.1f", currentMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow)
                 }
             }
 
-            HorizontalDivider()
+            HorizontalDivider(color = RacingSurface)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -792,22 +901,22 @@ fun ComparisonCard(
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Diff. P50 Mediana", fontSize = 10.sp)
+                    Text("Diff. P50 Mediana", fontSize = 10.sp, color = RacingTextSecondary)
                     Text(
                         text = p50Text,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (p50Diff <= 0) Color(0xFF2E7D32) else Color(0xFFC62828)
+                        color = if (p50Diff <= 0) RacingSuccess else RacingError
                     )
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Diff. Velocità", fontSize = 10.sp)
+                    Text("Diff. Velocità", fontSize = 10.sp, color = RacingTextSecondary)
                     Text(
                         text = pidsText,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (pidsDiff >= 0) Color(0xFF2E7D32) else Color(0xFFC62828)
+                        color = if (pidsDiff >= 0) RacingSuccess else RacingError
                     )
                 }
             }
@@ -832,7 +941,7 @@ fun ConsoleLogsCard(
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
+            containerColor = RacingSurface
         )
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -848,14 +957,14 @@ fun ConsoleLogsCard(
                         Icons.Default.Terminal,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
+                        tint = RacingYellow
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "CONSOLE LOGS (${logs.size})",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = RacingYellow
                     )
                 }
 
@@ -865,7 +974,8 @@ fun ConsoleLogsCard(
                 ) {
                     Icon(
                         if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = null
+                        contentDescription = null,
+                        tint = RacingYellow
                     )
                 }
             }
@@ -876,16 +986,16 @@ fun ConsoleLogsCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(180.dp)
-                        .background(Color(0xFF1E1E1E), shape = RoundedCornerShape(8.dp))
+                        .background(Color(0xFF050505), shape = RoundedCornerShape(8.dp))
                         .padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     items(logs) { logLine ->
                         val color = when {
-                            logLine.contains("ERRORE", ignoreCase = true) || logLine.contains("ERR:", ignoreCase = true) -> Color(0xFFFF5252)
-                            logLine.contains("SUCCESS", ignoreCase = true) || logLine.contains("riuscita", ignoreCase = true) -> Color(0xFF69F0AE)
-                            logLine.contains("[INIT]", ignoreCase = true) -> Color(0xFFFFD740)
-                            else -> Color(0xFFE0E0E0)
+                            logLine.contains("ERRORE", ignoreCase = true) || logLine.contains("ERR:", ignoreCase = true) -> RacingError
+                            logLine.contains("SUCCESS", ignoreCase = true) || logLine.contains("riuscita", ignoreCase = true) -> RacingSuccess
+                            logLine.contains("[INIT]", ignoreCase = true) -> RacingYellow
+                            else -> RacingText
                         }
 
                         Text(

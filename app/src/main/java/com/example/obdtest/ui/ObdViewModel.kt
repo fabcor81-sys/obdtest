@@ -131,8 +131,15 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectObdProfile(profile: ObdProfile) {
         _uiState.update {
-            it.copy(selectedProfile = profile)
+            it.copy(
+                selectedProfile = profile,
+                customCommand = profile.defaultCommand
+            )
         }
+    }
+
+    fun setCustomCommand(cmd: String) {
+        _uiState.update { it.copy(customCommand = cmd) }
     }
 
     fun selectRequestCount(count: Int) {
@@ -170,6 +177,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     device = bluetoothDevice,
                     transportMode = currentConfig.selectedTransportMode,
                     obdProfile = currentConfig.selectedProfile,
+                    customCommand = currentConfig.customCommand,
                     targetRequestCount = currentConfig.selectedRequestCount,
                     timeoutMs = ObdBenchmarkEngine.DEFAULT_TIMEOUT_MS,
                     onStatusUpdate = { status, msg ->

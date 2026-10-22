@@ -31,7 +31,7 @@ class MainActivity : ComponentActivity() {
         } else {
             Toast.makeText(
                 this,
-                "Permessi Bluetooth o di Posizione negati. Impossibile scansionare o connettersi.",
+                "Permessi Bluetooth o Posizione negati. Impossibile scansionare o connettersi.",
                 Toast.LENGTH_LONG
             ).show()
             viewModel.refreshBluetoothState()
@@ -75,6 +75,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onSelectProfile = { profile ->
                             viewModel.selectObdProfile(profile)
+                        },
+                        onCustomCommandChange = { cmd ->
+                            viewModel.setCustomCommand(cmd)
                         },
                         onSelectRequestCount = { count ->
                             viewModel.selectRequestCount(count)

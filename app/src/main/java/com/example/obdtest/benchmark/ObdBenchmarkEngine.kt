@@ -122,6 +122,7 @@ class ObdBenchmarkEngine {
         device: BluetoothDevice,
         transportMode: TransportMode = TransportMode.AUTO,
         obdProfile: ObdProfile = ObdProfile.AT_ONLY,
+        customCommand: String = "0100\r",
         targetRequestCount: Int = 100,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         onStatusUpdate: (BenchmarkStatus, String) -> Unit,
@@ -147,12 +148,14 @@ class ObdBenchmarkEngine {
         val effectiveTransport = if (isBleMode) TransportMode.BLE_GATT else TransportMode.CLASSIC_SPP
 
         val benchmarkMode = if (obdProfile == ObdProfile.AT_ONLY) BenchmarkMode.AT_ONLY else BenchmarkMode.OBD_PID
+        val targetCommand = if (obdProfile == ObdProfile.AT_ONLY) "ATI\r" else customCommand.trim().let { if (it.endsWith("\r")) it else "$it\r" }
 
         var metrics = BenchmarkMetrics(
             deviceName = device.name ?: device.address,
             deviceAddress = device.address,
             effectiveTransport = effectiveTransport,
             obdProfile = obdProfile,
+            measuredCommand = targetCommand.trim(),
             benchmarkMode = benchmarkMode,
             targetRequestCount = targetRequestCount,
             timeoutMs = timeoutMs
@@ -201,7 +204,6 @@ class ObdBenchmarkEngine {
 
             val elmVersion: String
             val protocol: String
-            val targetCommand: String
 
             when (obdProfile) {
                 ObdProfile.AT_ONLY -> {
@@ -213,7 +215,6 @@ class ObdBenchmarkEngine {
                     val atiResp = sendInitCmd("ATI\r")
                     elmVersion = if (atiResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atiResp, "ATI") else "ELM327 / Chip AT"
                     protocol = "N/D (AT-Only)"
-                    targetCommand = BenchmarkMode.AT_ONLY.command
                 }
 
                 ObdProfile.GENERIC_AUTO -> {
@@ -232,33 +233,27 @@ class ObdBenchmarkEngine {
 
                     val atdpResp = sendInitCmd("AT DP\r")
                     protocol = if (atdpResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atdpResp, "AT DP") else "Auto OBD2"
-                    targetCommand = BenchmarkMode.OBD_PID.command
                 }
 
-                ObdProfile.KWP_FAST_FCA -> {
-                    log("Inizializzazione KWP2000 Fast Init FCA (Header 812BF1 / Keep-Alive 812BF13E)...")
+                ObdProfile.LOTUS_ABS -> {
+                    log("Inizializzazione ECU ABS Lotus (Sequenza inderogabile: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5)...")
                     val atzResp = sendInitCmd("AT Z\r", 3000L)
-                    kotlinx.coroutines.delay(600)
+                    kotlinx.coroutines.delay(800) // Riavvio post ATZ
                     clearBuffer()
 
-                    elmVersion = if (atzResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atzResp, "AT Z") else "ELM327 v1.5"
+                    elmVersion = if (atzResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atzResp, "AT Z") else "ELM327"
 
                     sendInitCmd("AT L1\r")
-                    sendInitCmd("ATE0\r")
-                    sendInitCmd("ATH0\r")
-                    sendInitCmd("AT SP 5\r")
-                    sendInitCmd("AT SH 812BF1\r")
+                    val respSH = sendInitCmd("AT SH 812BF1\r")
                     sendInitCmd("AT WM 812BF13E\r")
+                    val respSP = sendInitCmd("AT SP 5\r")
 
-                    val probeResp = sendInitCmd("0100\r", 3500L)
-                    val parseProbe = ObdResponseParser.parseResponse(ObdProfile.KWP_FAST_FCA, "0100\r", probeResp, probeResp.contains(">"), probeResp.length)
-                    protocol = if (parseProbe.status == SampleStatus.SUCCESS) {
-                        "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
-                    } else {
-                        "KWP2000 (Non collegato a ECU)"
+                    val isInitOk = !respSH.contains("ERROR") && !respSP.contains("ERROR")
+                    if (!isInitOk) {
+                        log("ATTENZIONE: La ECU ABS Lotus ha restituito errori durante la sequenza di inizializzazione KWP2000!", isError = true)
                     }
 
-                    targetCommand = BenchmarkMode.OBD_PID.command
+                    protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
                 }
             }
 
@@ -271,10 +266,10 @@ class ObdBenchmarkEngine {
 
             coroutineContext.ensureActive()
 
-            log("=== INIZIO BENCHMARK METROLOGICO [${obdProfile.label}] ($targetRequestCount richieste) ===")
+            log("=== INIZIO BENCHMARK METROLOGICO [${obdProfile.label}] ($targetRequestCount richieste - Comando: $targetCommand) ===")
             onStatusUpdate(
                 BenchmarkStatus.RunningTest(0, targetRequestCount, 0.0, 0.0),
-                "Avvio benchmark metrologico ($targetRequestCount richieste)..."
+                "Avvio benchmark (${obdProfile.label})..."
             )
 
             var lastT0Nanos = 0L
@@ -419,7 +414,7 @@ class ObdBenchmarkEngine {
 
         val commandBytes = command.toByteArray(Charsets.US_ASCII)
 
-        // T0: Timestamp prima della chiamata di scrittura BLE
+        // T0: Monotonic Clock prima della chiamata di scrittura BLE
         val t0Nanos = SystemClock.elapsedRealtimeNanos()
 
         val writeType = if ((rxChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
@@ -439,7 +434,7 @@ class ObdBenchmarkEngine {
             gatt.writeCharacteristic(rxChar)
         }
 
-        // T1: Timestamp subito dopo l'invocazione della scrittura BLE
+        // T1: Monotonic Clock subito dopo l'invocazione di scrittura
         val t1Nanos = SystemClock.elapsedRealtimeNanos()
 
         if (!writeSuccess) {
@@ -1172,6 +1167,7 @@ class ObdBenchmarkEngine {
             writer.println("# Indirizzo MAC,${metrics.deviceAddress}")
             writer.println("# Trasporto Effettivo,${metrics.effectiveTransport.label}")
             writer.println("# Profilo OBD,${metrics.obdProfile.label}")
+            writer.println("# Comando Misurato,${escapeCsvField(metrics.measuredCommand)}")
             writer.println("# Firmware ELM,${escapeCsvField(metrics.elmVersion)}")
             writer.println("# Protocollo Rilevato,${escapeCsvField(metrics.protocolName)}")
             writer.println("# Timeout Configurato (ms),${metrics.timeoutMs}")
@@ -1233,7 +1229,7 @@ class ObdBenchmarkEngine {
                             "${sample.status.name}," +
                             "${sample.commandSent}," +
                             "${escapeCsvField(sample.rawResponse)}," +
-                            "${escapeCsvField(sample.parsedResponse)}"
+                            escapeCsvField(sample.parsedResponse)
                 )
             }
         }
