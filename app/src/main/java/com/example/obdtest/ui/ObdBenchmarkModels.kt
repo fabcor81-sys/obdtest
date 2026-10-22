@@ -8,6 +8,18 @@ enum class SampleStatus {
     INCOMPLETE_RESPONSE
 }
 
+enum class TransportMode(val label: String) {
+    AUTO("Automatico"),
+    CLASSIC_SPP("Bluetooth Classic (SPP)"),
+    BLE_GATT("Bluetooth Low Energy (GATT)")
+}
+
+enum class ObdProfile(val label: String) {
+    AT_ONLY("AT-Only (Latenza Chip ATI)"),
+    GENERIC_AUTO("OBD Standard (Auto Protocol AT SP 0)"),
+    KWP_FAST_FCA("KWP2000 Fast Init FCA (Header 812BF1)")
+}
+
 enum class BenchmarkMode(val label: String, val command: String) {
     AT_ONLY("Adattatore AT-Only (ATI)", "ATI\r"),
     OBD_PID("ECU / OBD2 (PID 0100)", "0100\r")
@@ -30,6 +42,7 @@ sealed interface BenchmarkStatus {
         val lastLatencyMs: Double
     ) : BenchmarkStatus
     object Completed : BenchmarkStatus
+    object Cancelled : BenchmarkStatus
     data class Error(val message: String) : BenchmarkStatus
 }
 
@@ -48,12 +61,15 @@ data class CommandTimingSample(
     val isSuccess: Boolean,
     val isTimeout: Boolean,
     val commandSent: String,
-    val rawResponse: String
+    val rawResponse: String,
+    val parsedResponse: String = ""
 )
 
 data class BenchmarkMetrics(
     val deviceName: String = "",
     val deviceAddress: String = "",
+    val effectiveTransport: TransportMode = TransportMode.AUTO,
+    val obdProfile: ObdProfile = ObdProfile.AT_ONLY,
     val benchmarkMode: BenchmarkMode = BenchmarkMode.AT_ONLY,
     val elmVersion: String = "N/D",
     val protocolName: String = "N/D",
@@ -74,27 +90,33 @@ data class BenchmarkMetrics(
     val jitterMs: Double = 0.0,
     val avgInterRequestIntervalMs: Double = 0.0,
     val commandsPerSecond: Double = 0.0,
-    val bytesPerSecond: Double = 0.0,
+    val appBytesPerSecond: Double = 0.0,
+    val rawBytesPerSecond: Double = 0.0,
     val testDurationMs: Long = 0L,
+    val timeoutMs: Long = 2500L,
+    val isPartialSession: Boolean = false,
     val initLog: List<String> = emptyList(),
     val sessionLogs: List<String> = emptyList(),
     val rawSamples: List<CommandTimingSample> = emptyList()
 ) {
     val successfulResponses: Int get() = successCount
+    val successRatePercent: Double
+        get() = if (totalCommandsSent > 0) (successCount.toDouble() / totalCommandsSent.toDouble()) * 100.0 else 0.0
 }
 
 data class ObdUiState(
     val pairedDevices: List<BluetoothDeviceItem> = emptyList(),
     val selectedDevice: BluetoothDeviceItem? = null,
-    val selectedBenchmarkMode: BenchmarkMode = BenchmarkMode.AT_ONLY,
+    val selectedTransportMode: TransportMode = TransportMode.AUTO,
+    val selectedProfile: ObdProfile = ObdProfile.AT_ONLY,
     val selectedRequestCount: Int = 100,
     val isScanning: Boolean = false,
+    val isBluetoothEnabled: Boolean = true,
+    val hasPermissions: Boolean = false,
     val status: BenchmarkStatus = BenchmarkStatus.Idle,
     val statusMessage: String = "Seleziona un dispositivo, modalità e avvia il benchmark metrologico",
     val currentMetrics: BenchmarkMetrics? = null,
     val savedComparisonMetrics: BenchmarkMetrics? = null,
     val logs: List<String> = emptyList(),
-    val hasPermissions: Boolean = false,
     val exportedCsvPath: String? = null
 )
-

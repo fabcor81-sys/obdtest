@@ -16,11 +16,16 @@ import com.example.obdtest.ui.BenchmarkMetrics
 import com.example.obdtest.ui.BenchmarkMode
 import com.example.obdtest.ui.BenchmarkStatus
 import com.example.obdtest.ui.CommandTimingSample
+import com.example.obdtest.ui.ObdProfile
 import com.example.obdtest.ui.SampleStatus
+import com.example.obdtest.ui.TransportMode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
@@ -30,6 +35,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.coroutines.coroutineContext
 import kotlin.math.sqrt
 
 class ObdBenchmarkEngine {
@@ -37,10 +43,9 @@ class ObdBenchmarkEngine {
     companion object {
         private const val TAG = "OBD_DEBUG"
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-        private const val DEFAULT_TIMEOUT_MS = 2500L
+        const val DEFAULT_TIMEOUT_MS = 2500L
         private const val READ_BUFFER_SIZE = 1024
 
-        // UUID Servizi GATT Seriale Frequenti (Norauto BLE, Nordic UART, Vgate BLE)
         private val NORDIC_UART_SERVICE_UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
         private val NORDIC_UART_RX_UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
         private val NORDIC_UART_TX_UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
@@ -72,6 +77,9 @@ class ObdBenchmarkEngine {
     @Volatile
     private var isGattReady = false
 
+    @Volatile
+    private var activeSessionId: Long = 0L
+
     private val bleResponseBuffer = StringBuilder()
 
     @Volatile
@@ -91,7 +99,7 @@ class ObdBenchmarkEngine {
     private fun log(message: String, isError: Boolean = false) {
         val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
         val formattedLog = "[$timestamp] $message"
-        _logs.value = (_logs.value + formattedLog).takeLast(150)
+        _logs.update { (it + formattedLog).takeLast(200) }
         if (isError) {
             Log.e(TAG, message)
         } else {
@@ -112,51 +120,79 @@ class ObdBenchmarkEngine {
     suspend fun runBenchmark(
         context: Context,
         device: BluetoothDevice,
-        isBle: Boolean = false,
-        benchmarkMode: BenchmarkMode = BenchmarkMode.AT_ONLY,
+        transportMode: TransportMode = TransportMode.AUTO,
+        obdProfile: ObdProfile = ObdProfile.AT_ONLY,
         targetRequestCount: Int = 100,
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         onStatusUpdate: (BenchmarkStatus, String) -> Unit,
         onMetricsUpdate: (BenchmarkMetrics) -> Unit
     ): BenchmarkMetrics = withContext(Dispatchers.IO) {
         isRunning = true
+        activeSessionId = System.currentTimeMillis()
+        val currentSessionId = activeSessionId
 
+        // Determinazione del Trasporto
         val deviceNameUpper = (device.name ?: "").uppercase(Locale.US)
-        val effectiveIsBle = isBle ||
-                device.type == BluetoothDevice.DEVICE_TYPE_LE ||
-                device.type == BluetoothDevice.DEVICE_TYPE_DUAL ||
-                deviceNameUpper.contains("NORAUTO") ||
-                deviceNameUpper.contains("BLE") ||
-                deviceNameUpper.contains("VGATE") ||
-                deviceNameUpper.contains("GATT")
+        val isExplicitBle = transportMode == TransportMode.BLE_GATT ||
+                (transportMode == TransportMode.AUTO && (
+                        device.type == BluetoothDevice.DEVICE_TYPE_LE ||
+                        device.type == BluetoothDevice.DEVICE_TYPE_DUAL ||
+                        deviceNameUpper.contains("NORAUTO") ||
+                        deviceNameUpper.contains("BLE") ||
+                        deviceNameUpper.contains("VGATE") ||
+                        deviceNameUpper.contains("GATT")
+                ))
 
-        isBleMode = effectiveIsBle
+        isBleMode = isExplicitBle
+        val effectiveTransport = if (isBleMode) TransportMode.BLE_GATT else TransportMode.CLASSIC_SPP
+
+        val benchmarkMode = if (obdProfile == ObdProfile.AT_ONLY) BenchmarkMode.AT_ONLY else BenchmarkMode.OBD_PID
 
         var metrics = BenchmarkMetrics(
             deviceName = device.name ?: device.address,
             deviceAddress = device.address,
+            effectiveTransport = effectiveTransport,
+            obdProfile = obdProfile,
             benchmarkMode = benchmarkMode,
-            targetRequestCount = targetRequestCount
+            targetRequestCount = targetRequestCount,
+            timeoutMs = timeoutMs
         )
 
+        val samples = mutableListOf<CommandTimingSample>()
+        val testStartTimestampMs = System.currentTimeMillis()
+        var totalRawBytesReceived = 0L
+        var totalAppBytesReceived = 0L
+
         try {
-            val transportTypeStr = if (isBleMode) "BLE (GATT)" else "Classic (SPP)"
-            log("Connessione a ${device.name ?: device.address} via $transportTypeStr...")
-            onStatusUpdate(BenchmarkStatus.Connecting, "Connessione $transportTypeStr in corso a ${device.name ?: device.address}...")
+            log("Connessione a ${device.name ?: device.address} via ${effectiveTransport.label}...")
+            onStatusUpdate(BenchmarkStatus.Connecting, "Connessione in corso a ${device.name ?: device.address} (${effectiveTransport.label})...")
 
             if (isBleMode) {
-                connectGattDevice(context, device)
+                connectGattDevice(context.applicationContext, device)
             } else {
-                connectClassicSocket(device)
+                try {
+                    connectClassicSocket(device)
+                } catch (e: Exception) {
+                    if (transportMode == TransportMode.AUTO) {
+                        log("Connessione Classic SPP fallita (${e.message}). Tentativo di Fallback su BLE GATT...")
+                        isBleMode = true
+                        connectGattDevice(context.applicationContext, device)
+                    } else {
+                        throw e
+                    }
+                }
             }
-            log("Connessione $transportTypeStr stabilita con successo!")
 
-            onStatusUpdate(BenchmarkStatus.Initializing, "Inizializzazione automatica adattatore (${benchmarkMode.label})...")
+            coroutineContext.ensureActive()
+            log("Connessione stabilita con successo via ${if (isBleMode) "BLE GATT" else "Classic SPP"}!")
+
+            onStatusUpdate(BenchmarkStatus.Initializing, "Inizializzazione (${obdProfile.label})...")
 
             val initLogEntries = mutableListOf<String>()
 
-            fun sendInitCmd(cmd: String, timeout: Long = DEFAULT_TIMEOUT_MS): String {
-                val resp = executeRawCommand(cmd, timeout)
-                val clean = cleanResponse(resp, cmd)
+            fun sendInitCmd(cmd: String, cmdTimeout: Long = timeoutMs): String {
+                val resp = executeRawCommand(cmd, cmdTimeout)
+                val clean = ObdResponseParser.cleanRawResponse(resp, cmd)
                 val entry = "CMD: ${cmd.trim()} -> RESP: ${if (clean.isBlank()) "OK/NO_RESP" else clean}"
                 initLogEntries.add(entry)
                 log("[INIT] $entry")
@@ -167,52 +203,63 @@ class ObdBenchmarkEngine {
             val protocol: String
             val targetCommand: String
 
-            if (benchmarkMode == BenchmarkMode.AT_ONLY) {
-                log("Configurazione automatica modalità AT-Only...")
-                sendInitCmd("ATE0\r")
-                sendInitCmd("ATL0\r")
-                sendInitCmd("ATH0\r")
+            when (obdProfile) {
+                ObdProfile.AT_ONLY -> {
+                    log("Configurazione modalità AT-Only (Latenza Chip ATI)...")
+                    sendInitCmd("ATE0\r")
+                    sendInitCmd("ATL0\r")
+                    sendInitCmd("ATH0\r")
 
-                val atiResp = sendInitCmd("ATI\r")
-                elmVersion = if (atiResp.isNotBlank()) atiResp else "ELM327 / Adattatore AT"
-                protocol = "N/D (AT-Only)"
-                targetCommand = BenchmarkMode.AT_ONLY.command
-                log("Versione Adattatore Rilevata: $elmVersion")
-            } else {
-                log("Inizio sequenza automatica di inizializzazione ECU / OBD2...")
-
-                val atzResp = sendInitCmd("AT Z\r", 3000L)
-                kotlinx.coroutines.delay(600)
-                clearBuffer()
-
-                elmVersion = if (atzResp.isNotBlank()) atzResp else "ELM327 v1.5"
-
-                log("Tentativo 1: Aggancio automatico KWP2000 Fast Init (ISO 14230-4 / Header 812BF1 / Keep-Alive 812BF13E)...")
-                sendInitCmd("AT L1\r")
-                sendInitCmd("ATE0\r")
-                sendInitCmd("ATH0\r")
-                sendInitCmd("AT SP 5\r") // ISO 14230-4 KWP Fast Init
-                sendInitCmd("AT SH 812BF1\r") // Header Custom FCA/Fiat/Bosch
-                sendInitCmd("AT WM 812BF13E\r") // Keep-Alive KWP2000 TesterPresent
-
-                val kwpProbeResp = sendInitCmd("0100\r", 3500L)
-                val cleanKwpProbe = cleanResponse(kwpProbeResp, "0100")
-                val kwpSuccess = cleanKwpProbe.contains("41") || cleanKwpProbe.contains("4100") || cleanKwpProbe.contains("41 00")
-
-                if (kwpSuccess) {
-                    protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
-                    log("Aggancio ECU KWP2000 completato con successo!")
-                } else {
-                    log("KWP2000 Custom non ha risposto o non presente. Tentativo 2: Fallback su Auto Protocol OBD2 (AT SP 0)...")
-                    sendInitCmd("AT SP 0\r") // Auto Protocol
-                    sendInitCmd("AT SH 7DF\r") // Reset Header Standard Broadcast
-                    sendInitCmd("0100\r", 4000L)
-                    val atdpResp = sendInitCmd("AT DP\r")
-                    protocol = if (atdpResp.isNotBlank()) atdpResp else "Auto OBD2"
-                    log("Protocollo OBD2 Rilevato: $protocol")
+                    val atiResp = sendInitCmd("ATI\r")
+                    elmVersion = if (atiResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atiResp, "ATI") else "ELM327 / Chip AT"
+                    protocol = "N/D (AT-Only)"
+                    targetCommand = BenchmarkMode.AT_ONLY.command
                 }
 
-                targetCommand = BenchmarkMode.OBD_PID.command
+                ObdProfile.GENERIC_AUTO -> {
+                    log("Inizializzazione OBD Standard Auto Protocol (AT SP 0)...")
+                    val atzResp = sendInitCmd("AT Z\r", 3000L)
+                    kotlinx.coroutines.delay(600)
+                    clearBuffer()
+
+                    elmVersion = if (atzResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atzResp, "AT Z") else "ELM327 v1.5"
+
+                    sendInitCmd("ATE0\r")
+                    sendInitCmd("ATL0\r")
+                    sendInitCmd("ATH0\r")
+                    sendInitCmd("AT M0\r")
+                    sendInitCmd("AT SP 0\r")
+
+                    val atdpResp = sendInitCmd("AT DP\r")
+                    protocol = if (atdpResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atdpResp, "AT DP") else "Auto OBD2"
+                    targetCommand = BenchmarkMode.OBD_PID.command
+                }
+
+                ObdProfile.KWP_FAST_FCA -> {
+                    log("Inizializzazione KWP2000 Fast Init FCA (Header 812BF1 / Keep-Alive 812BF13E)...")
+                    val atzResp = sendInitCmd("AT Z\r", 3000L)
+                    kotlinx.coroutines.delay(600)
+                    clearBuffer()
+
+                    elmVersion = if (atzResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atzResp, "AT Z") else "ELM327 v1.5"
+
+                    sendInitCmd("AT L1\r")
+                    sendInitCmd("ATE0\r")
+                    sendInitCmd("ATH0\r")
+                    sendInitCmd("AT SP 5\r")
+                    sendInitCmd("AT SH 812BF1\r")
+                    sendInitCmd("AT WM 812BF13E\r")
+
+                    val probeResp = sendInitCmd("0100\r", 3500L)
+                    val parseProbe = ObdResponseParser.parseResponse(ObdProfile.KWP_FAST_FCA, "0100\r", probeResp, probeResp.contains(">"), probeResp.length)
+                    protocol = if (parseProbe.status == SampleStatus.SUCCESS) {
+                        "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
+                    } else {
+                        "KWP2000 (Non collegato a ECU)"
+                    }
+
+                    targetCommand = BenchmarkMode.OBD_PID.command
+                }
             }
 
             metrics = metrics.copy(
@@ -222,39 +269,35 @@ class ObdBenchmarkEngine {
             )
             onMetricsUpdate(metrics)
 
-            if (!isRunning) throw InterruptedException("Test interrotto dall'utente")
+            coroutineContext.ensureActive()
 
-            // =========================================================
-            // BENCHMARK METROLOGICO AD ALTA PRECISIONE
-            // =========================================================
-            log("=== INIZIO BENCHMARK METROLOGICO [${benchmarkMode.label}] ($targetRequestCount richieste) ===")
+            log("=== INIZIO BENCHMARK METROLOGICO [${obdProfile.label}] ($targetRequestCount richieste) ===")
             onStatusUpdate(
                 BenchmarkStatus.RunningTest(0, targetRequestCount, 0.0, 0.0),
-                "Avvio benchmark (${benchmarkMode.label})..."
+                "Avvio benchmark metrologico ($targetRequestCount richieste)..."
             )
 
-            val samples = mutableListOf<CommandTimingSample>()
-            val testStartTimestampMs = System.currentTimeMillis()
             var lastT0Nanos = 0L
-            var totalBytesReceived = 0L
             var lastUiUpdateMs = System.currentTimeMillis()
 
             for (i in 1..targetRequestCount) {
-                if (!isRunning) break
+                if (!isRunning || currentSessionId != activeSessionId) break
+                coroutineContext.ensureActive()
 
                 val sample = executeCommandTimed(
                     sampleIndex = i,
-                    mode = benchmarkMode,
+                    profile = obdProfile,
                     command = targetCommand,
                     previousT0Nanos = lastT0Nanos,
-                    timeoutMs = DEFAULT_TIMEOUT_MS
+                    timeoutMs = timeoutMs
                 )
 
                 lastT0Nanos = sample.t0Nanos
                 samples.add(sample)
 
+                totalRawBytesReceived += sample.rawResponse.length
                 if (sample.isSuccess) {
-                    totalBytesReceived += sample.rawResponse.length
+                    totalAppBytesReceived += sample.parsedResponse.length
                 }
 
                 val nowMs = System.currentTimeMillis()
@@ -267,7 +310,9 @@ class ObdBenchmarkEngine {
                         baseMetrics = metrics,
                         samples = samples,
                         totalDurationMs = nowMs - testStartTimestampMs,
-                        totalBytesReceived = totalBytesReceived
+                        totalRawBytesReceived = totalRawBytesReceived,
+                        totalAppBytesReceived = totalAppBytesReceived,
+                        isPartial = false
                     )
                     metrics = updatedMetrics
                     onMetricsUpdate(metrics)
@@ -289,30 +334,51 @@ class ObdBenchmarkEngine {
                 baseMetrics = metrics,
                 samples = samples,
                 totalDurationMs = finalDurationMs,
-                totalBytesReceived = totalBytesReceived
+                totalRawBytesReceived = totalRawBytesReceived,
+                totalAppBytesReceived = totalAppBytesReceived,
+                isPartial = false
             )
 
             log("=== BENCHMARK COMPLETATO ===")
-            log("Risultati per ${metrics.deviceName} (${benchmarkMode.label}):")
-            log(" - Tipo Connessione: $transportTypeStr")
+            log("Risultati per ${metrics.deviceName} (${obdProfile.label}):")
+            log(" - Trasporto: ${metrics.effectiveTransport.label}")
             log(" - Firmware: ${metrics.elmVersion}")
-            log(" - Campioni: Richiesti: $targetRequestCount | SUCCESS: ${metrics.successCount} | ECU_ERR: ${metrics.ecuErrorCount} | ADAPTER_ERR: ${metrics.adapterErrorCount} | TIMEOUT: ${metrics.timeoutCount} | INCOMPLETE: ${metrics.incompleteCount}")
+            log(" - Campioni: SUCCESS: ${metrics.successCount}/${metrics.totalCommandsSent} (${String.format(Locale.US, "%.1f", metrics.successRatePercent)}%) | ECU_ERR: ${metrics.ecuErrorCount} | ADAPTER_ERR: ${metrics.adapterErrorCount} | TIMEOUT: ${metrics.timeoutCount} | INCOMPLETE: ${metrics.incompleteCount}")
             log(" - Latenza Min: ${String.format(Locale.US, "%.2f", metrics.minLatencyMs)} ms | Media: ${String.format(Locale.US, "%.2f", metrics.avgLatencyMs)} ms | Max: ${String.format(Locale.US, "%.2f", metrics.maxLatencyMs)} ms")
-            log(" - Percentili: P50: ${String.format(Locale.US, "%.2f", metrics.p50Ms)} ms | P95: ${String.format(Locale.US, "%.2f", metrics.p95Ms)} ms | P99: ${String.format(Locale.US, "%.2f", metrics.p99Ms)} ms")
+            log(" - Percentili (sui successi): P50: ${String.format(Locale.US, "%.2f", metrics.p50Ms)} ms | P95: ${String.format(Locale.US, "%.2f", metrics.p95Ms)} ms | P99: ${String.format(Locale.US, "%.2f", metrics.p99Ms)} ms")
             log(" - Stabilità: StdDev: ${String.format(Locale.US, "%.2f", metrics.stdDevMs)} ms | Jitter: ${String.format(Locale.US, "%.2f", metrics.jitterMs)} ms")
-            log(" - Velocità Comandi: ${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} Cmd/s")
+            log(" - Throughput: App: ${String.format(Locale.US, "%.1f", metrics.appBytesPerSecond)} B/s | Grezzo: ${String.format(Locale.US, "%.1f", metrics.rawBytesPerSecond)} B/s")
 
             onMetricsUpdate(metrics)
             onStatusUpdate(BenchmarkStatus.Completed, "Benchmark metrologico completato!")
 
             metrics
+        } catch (e: CancellationException) {
+            log("Benchmark annullato dall'utente.", isError = false)
+            val partialMetrics = calculateMetrics(
+                baseMetrics = metrics,
+                samples = samples,
+                totalDurationMs = System.currentTimeMillis() - testStartTimestampMs,
+                totalRawBytesReceived = totalRawBytesReceived,
+                totalAppBytesReceived = totalAppBytesReceived,
+                isPartial = true
+            )
+            onMetricsUpdate(partialMetrics)
+            onStatusUpdate(BenchmarkStatus.Cancelled, "Benchmark interrotto dall'utente.")
+            throw e
         } catch (e: Exception) {
             val errLog = "ERRORE APPLICATIVO CRITICO: ${e.javaClass.simpleName} - ${e.message}\n${Log.getStackTraceString(e)}"
             log(errLog, isError = true)
 
-            metrics = metrics.copy(sessionLogs = _logs.value)
-            onMetricsUpdate(metrics)
-
+            val partialMetrics = calculateMetrics(
+                baseMetrics = metrics,
+                samples = samples,
+                totalDurationMs = System.currentTimeMillis() - testStartTimestampMs,
+                totalRawBytesReceived = totalRawBytesReceived,
+                totalAppBytesReceived = totalAppBytesReceived,
+                isPartial = true
+            )
+            onMetricsUpdate(partialMetrics)
             onStatusUpdate(BenchmarkStatus.Error(e.message ?: "Errore di comunicazione"), "Errore: ${e.message}")
             throw e
         } finally {
@@ -320,98 +386,24 @@ class ObdBenchmarkEngine {
         }
     }
 
-    private fun classifyResponse(
-        mode: BenchmarkMode,
-        commandSent: String,
-        rawResponse: String,
-        hasPrompt: Boolean,
-        bytesReceived: Int
-    ): SampleStatus {
-        if (!hasPrompt) {
-            return if (bytesReceived == 0 || rawResponse.isBlank()) {
-                SampleStatus.TIMEOUT
-            } else {
-                SampleStatus.INCOMPLETE_RESPONSE
-            }
-        }
-
-        val upper = rawResponse.uppercase(Locale.US).trim()
-
-        // 1. Errore o stato di interruzione dell'adattatore
-        if (upper.contains("STOPPED") ||
-            upper.contains("SEARCHING...") ||
-            upper.contains("BUFFER FULL") ||
-            upper == "?" ||
-            upper.contains("FB ERROR") ||
-            upper.contains("ACT ERROR") ||
-            upper.contains("DATA ERROR") ||
-            upper.contains("ERR70")
-        ) {
-            return SampleStatus.ADAPTER_ERROR
-        }
-
-        // 2. Errore riscontrato sul bus ECU / veicolo
-        if (upper.contains("BUS INIT: ERROR") ||
-            upper.contains("BUS INIT ERROR") ||
-            upper.contains("NO DATA") ||
-            upper.contains("UNABLE TO CONNECT") ||
-            upper.contains("BUS ERROR") ||
-            upper.contains("BUS BUSY") ||
-            upper.contains("CAN ERROR")
-        ) {
-            return SampleStatus.ECU_ERROR
-        }
-
-        // 3. Valutazione in base alla modalità di benchmark
-        return when (mode) {
-            BenchmarkMode.AT_ONLY -> {
-                val cleaned = cleanResponse(rawResponse, commandSent)
-                if (cleaned.isNotBlank()) {
-                    SampleStatus.SUCCESS
-                } else {
-                    SampleStatus.ADAPTER_ERROR
-                }
-            }
-
-            BenchmarkMode.OBD_PID -> {
-                val cleaned = cleanResponse(rawResponse, commandSent).replace(" ", "")
-                val cmdClean = commandSent.trim().replace("\r", "").replace(" ", "").uppercase(Locale.US)
-                if (cmdClean.startsWith("01")) {
-                    val expectedMode = "41" + cmdClean.substring(2) // es. 0100 -> 4100
-                    if (cleaned.contains(expectedMode) || cleaned.startsWith("41")) {
-                        SampleStatus.SUCCESS
-                    } else {
-                        SampleStatus.ECU_ERROR
-                    }
-                } else {
-                    if (cleaned.isNotBlank()) {
-                        SampleStatus.SUCCESS
-                    } else {
-                        SampleStatus.ECU_ERROR
-                    }
-                }
-            }
-        }
-    }
-
     private fun executeCommandTimed(
         sampleIndex: Int,
-        mode: BenchmarkMode,
+        profile: ObdProfile,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
     ): CommandTimingSample {
         return if (isBleMode) {
-            executeCommandTimedBle(sampleIndex, mode, command, previousT0Nanos, timeoutMs)
+            executeCommandTimedBle(sampleIndex, profile, command, previousT0Nanos, timeoutMs)
         } else {
-            executeCommandTimedClassic(sampleIndex, mode, command, previousT0Nanos, timeoutMs)
+            executeCommandTimedClassic(sampleIndex, profile, command, previousT0Nanos, timeoutMs)
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun executeCommandTimedBle(
         sampleIndex: Int,
-        mode: BenchmarkMode,
+        profile: ObdProfile,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
@@ -427,25 +419,27 @@ class ObdBenchmarkEngine {
 
         val commandBytes = command.toByteArray(Charsets.US_ASCII)
 
-        // t0: Timestamp invio BLE
+        // T0: Timestamp prima della chiamata di scrittura BLE
         val t0Nanos = SystemClock.elapsedRealtimeNanos()
 
+        val writeType = if ((rxChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        }
+
         val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(
-                rxChar,
-                commandBytes,
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            ) == android.bluetooth.BluetoothStatusCodes.SUCCESS
+            gatt.writeCharacteristic(rxChar, commandBytes, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             rxChar.value = commandBytes
             @Suppress("DEPRECATION")
-            rxChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            rxChar.writeType = writeType
             @Suppress("DEPRECATION")
             gatt.writeCharacteristic(rxChar)
         }
 
-        // t1: Timestamp dopo la scrittura del pacchetto BLE
+        // T1: Timestamp subito dopo l'invocazione della scrittura BLE
         val t1Nanos = SystemClock.elapsedRealtimeNanos()
 
         if (!writeSuccess) {
@@ -457,8 +451,8 @@ class ObdBenchmarkEngine {
         var t3Nanos = 0L
         var rawResponse = ""
 
-        val startWaitMs = SystemClock.elapsedRealtimeNanos()
-        while (isRunning && (SystemClock.elapsedRealtimeNanos() - startWaitMs) < timeoutNanos) {
+        val startWaitNanos = SystemClock.elapsedRealtimeNanos()
+        while (isRunning && (SystemClock.elapsedRealtimeNanos() - startWaitNanos) < timeoutNanos) {
             synchronized(bleLock) {
                 if (bleFirstByteTimestampNanos > 0L && t2Nanos == 0L) {
                     t2Nanos = bleFirstByteTimestampNanos
@@ -481,21 +475,20 @@ class ObdBenchmarkEngine {
             }
         }
 
-        val status = classifyResponse(
-            mode = mode,
+        val parseResult = ObdResponseParser.parseResponse(
+            profile = profile,
             commandSent = command,
             rawResponse = rawResponse,
             hasPrompt = hasPrompt,
             bytesReceived = rawResponse.length
         )
 
-        // Risincronizzazione dello stream in caso di timeout o mancato prompt per pulire il buffer
-        if (status == SampleStatus.TIMEOUT || status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
+        if (parseResult.status == SampleStatus.TIMEOUT || parseResult.status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
             resyncStreamBle()
         }
 
-        val isSuccess = (status == SampleStatus.SUCCESS)
-        val isTimeout = (status == SampleStatus.TIMEOUT)
+        val isSuccess = (parseResult.status == SampleStatus.SUCCESS)
+        val isTimeout = (parseResult.status == SampleStatus.TIMEOUT)
 
         val writeDurationMs = (t1Nanos - t0Nanos) / 1_000_000.0
         val timeToFirstByteMs = if (t2Nanos > 0) (t2Nanos - t1Nanos) / 1_000_000.0 else 0.0
@@ -514,17 +507,18 @@ class ObdBenchmarkEngine {
             rxDurationMs = rxDurationMs,
             totalRoundTripMs = totalRoundTripMs,
             interRequestIntervalMs = interRequestIntervalMs,
-            status = status,
+            status = parseResult.status,
             isSuccess = isSuccess,
             isTimeout = isTimeout,
             commandSent = command.trim(),
-            rawResponse = cleanResponse(rawResponse, command)
+            rawResponse = parseResult.cleanedResponse,
+            parsedResponse = parseResult.extractedPayload
         )
     }
 
     private fun executeCommandTimedClassic(
         sampleIndex: Int,
-        mode: BenchmarkMode,
+        profile: ObdProfile,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
@@ -571,6 +565,8 @@ class ObdBenchmarkEngine {
                             break
                         }
                     }
+                } else {
+                    Thread.sleep(1)
                 }
             } catch (_: SocketTimeoutException) {
             } catch (e: Exception) {
@@ -585,21 +581,20 @@ class ObdBenchmarkEngine {
         }
 
         val rawResponse = responseBuilder.toString()
-        val status = classifyResponse(
-            mode = mode,
+        val parseResult = ObdResponseParser.parseResponse(
+            profile = profile,
             commandSent = command,
             rawResponse = rawResponse,
             hasPrompt = hasPrompt,
             bytesReceived = totalBytesRead
         )
 
-        // Risincronizzazione dello stream in caso di timeout o mancato prompt per svuotare residui
-        if (status == SampleStatus.TIMEOUT || status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
+        if (parseResult.status == SampleStatus.TIMEOUT || parseResult.status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
             resyncStreamClassic()
         }
 
-        val isSuccess = (status == SampleStatus.SUCCESS)
-        val isTimeout = (status == SampleStatus.TIMEOUT)
+        val isSuccess = (parseResult.status == SampleStatus.SUCCESS)
+        val isTimeout = (parseResult.status == SampleStatus.TIMEOUT)
 
         val writeDurationMs = (t1Nanos - t0Nanos) / 1_000_000.0
         val timeToFirstByteMs = if (t2Nanos > 0) (t2Nanos - t1Nanos) / 1_000_000.0 else 0.0
@@ -618,11 +613,12 @@ class ObdBenchmarkEngine {
             rxDurationMs = rxDurationMs,
             totalRoundTripMs = totalRoundTripMs,
             interRequestIntervalMs = interRequestIntervalMs,
-            status = status,
+            status = parseResult.status,
             isSuccess = isSuccess,
             isTimeout = isTimeout,
             commandSent = command.trim(),
-            rawResponse = cleanResponse(rawResponse, command)
+            rawResponse = parseResult.cleanedResponse,
+            parsedResponse = parseResult.extractedPayload
         )
     }
 
@@ -652,13 +648,19 @@ class ObdBenchmarkEngine {
         val rxChar = rxCharacteristic ?: return
         try {
             val commandBytes = "\r".toByteArray(Charsets.US_ASCII)
+            val writeType = if ((rxChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            } else {
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(rxChar, commandBytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                gatt.writeCharacteristic(rxChar, commandBytes, writeType)
             } else {
                 @Suppress("DEPRECATION")
                 rxChar.value = commandBytes
                 @Suppress("DEPRECATION")
-                rxChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                rxChar.writeType = writeType
                 @Suppress("DEPRECATION")
                 gatt.writeCharacteristic(rxChar)
             }
@@ -695,7 +697,7 @@ class ObdBenchmarkEngine {
             isSuccess = false,
             isTimeout = true,
             commandSent = command.trim(),
-            rawResponse = "ERRORE / CONNETTORE NON DISPONIBILE"
+            rawResponse = "ERRORE / ADATTATORE NON DISPONIBILE"
         )
     }
 
@@ -703,9 +705,11 @@ class ObdBenchmarkEngine {
         baseMetrics: BenchmarkMetrics,
         samples: List<CommandTimingSample>,
         totalDurationMs: Long,
-        totalBytesReceived: Long
+        totalRawBytesReceived: Long,
+        totalAppBytesReceived: Long,
+        isPartial: Boolean
     ): BenchmarkMetrics {
-        if (samples.isEmpty()) return baseMetrics
+        if (samples.isEmpty()) return baseMetrics.copy(isPartialSession = isPartial)
 
         val successCount = samples.count { it.status == SampleStatus.SUCCESS }
         val ecuErrorCount = samples.count { it.status == SampleStatus.ECU_ERROR }
@@ -743,7 +747,8 @@ class ObdBenchmarkEngine {
 
         val totalSec = (totalDurationMs / 1000.0).coerceAtLeast(0.1)
         val pidsPerSec = successCount / totalSec
-        val bytesPerSec = totalBytesReceived / totalSec
+        val appBytesPerSec = totalAppBytesReceived / totalSec
+        val rawBytesPerSec = totalRawBytesReceived / totalSec
 
         return baseMetrics.copy(
             totalCommandsSent = samples.size,
@@ -762,8 +767,10 @@ class ObdBenchmarkEngine {
             jitterMs = jitter,
             avgInterRequestIntervalMs = avgInterval,
             commandsPerSecond = pidsPerSec,
-            bytesPerSecond = bytesPerSec,
+            appBytesPerSecond = appBytesPerSec,
+            rawBytesPerSecond = rawBytesPerSec,
             testDurationMs = totalDurationMs,
+            isPartialSession = isPartial,
             sessionLogs = _logs.value,
             rawSamples = samples
         )
@@ -799,10 +806,10 @@ class ObdBenchmarkEngine {
             out.flush()
 
             val responseBuilder = StringBuilder()
-            val startMs = System.currentTimeMillis()
+            val startMs = SystemClock.elapsedRealtime()
             val buffer = ByteArray(READ_BUFFER_SIZE)
 
-            while (System.currentTimeMillis() - startMs < timeoutMs && isRunning) {
+            while (SystemClock.elapsedRealtime() - startMs < timeoutMs && isRunning) {
                 if (input.available() > 0) {
                     val bytesRead = input.read(buffer)
                     if (bytesRead > 0) {
@@ -812,10 +819,12 @@ class ObdBenchmarkEngine {
                             break
                         }
                     }
+                } else {
+                    Thread.sleep(1)
                 }
             }
 
-            return cleanResponse(responseBuilder.toString(), command)
+            return ObdResponseParser.cleanRawResponse(responseBuilder.toString(), command)
         } catch (e: Exception) {
             log("Errore comando raw Classic '$command': ${e.message}")
             return ""
@@ -832,28 +841,34 @@ class ObdBenchmarkEngine {
         }
 
         val commandBytes = command.toByteArray(Charsets.US_ASCII)
+        val writeType = if ((rxChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(rxChar, commandBytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            gatt.writeCharacteristic(rxChar, commandBytes, writeType)
         } else {
             @Suppress("DEPRECATION")
             rxChar.value = commandBytes
             @Suppress("DEPRECATION")
-            rxChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            rxChar.writeType = writeType
             @Suppress("DEPRECATION")
             gatt.writeCharacteristic(rxChar)
         }
 
-        val startMs = System.currentTimeMillis()
+        val startMs = SystemClock.elapsedRealtime()
         var response = ""
 
-        while (System.currentTimeMillis() - startMs < timeoutMs && isRunning) {
+        while (SystemClock.elapsedRealtime() - startMs < timeoutMs && isRunning) {
             synchronized(bleLock) {
                 if (bleResponseBuffer.contains(">")) {
                     response = bleResponseBuffer.toString()
                 }
             }
             if (response.isNotEmpty()) break
-            Thread.sleep(5)
+            Thread.sleep(2)
         }
 
         if (response.isEmpty()) {
@@ -862,21 +877,7 @@ class ObdBenchmarkEngine {
             }
         }
 
-        return cleanResponse(response, command)
-    }
-
-    private fun cleanResponse(rawResponse: String, sentCommand: String): String {
-        var clean = rawResponse
-            .replace(">", "")
-            .replace("\r", " ")
-            .replace("\n", " ")
-            .replace(sentCommand.trim(), "")
-            .trim()
-
-        while (clean.contains("  ")) {
-            clean = clean.replace("  ", " ")
-        }
-        return clean
+        return ObdResponseParser.cleanRawResponse(response, command)
     }
 
     private fun clearBuffer() {
@@ -1026,7 +1027,6 @@ class ObdBenchmarkEngine {
         var foundRx: BluetoothGattCharacteristic? = null
         var foundTx: BluetoothGattCharacteristic? = null
 
-        // 1. Cerca Nordic UART Service (NUS)
         val nusService = gatt.getService(NORDIC_UART_SERVICE_UUID)
         if (nusService != null) {
             foundRx = nusService.getCharacteristic(NORDIC_UART_RX_UUID)
@@ -1034,7 +1034,6 @@ class ObdBenchmarkEngine {
             log("Rilevato servizio Nordic UART Service (Norauto/BLE standard)!")
         }
 
-        // 2. Cerca FFF0 Service
         if (foundRx == null) {
             val fff0Service = gatt.getService(FFF0_SERVICE_UUID)
             if (fff0Service != null) {
@@ -1044,7 +1043,6 @@ class ObdBenchmarkEngine {
             }
         }
 
-        // 3. Cerca FFE0 Service
         if (foundRx == null) {
             val ffe0Service = gatt.getService(FFE0_SERVICE_UUID)
             if (ffe0Service != null) {
@@ -1055,7 +1053,6 @@ class ObdBenchmarkEngine {
             }
         }
 
-        // 4. Fallback euristico su tutti i servizi
         if (foundRx == null) {
             for (service in services) {
                 for (char in service.characteristics) {
@@ -1075,15 +1072,21 @@ class ObdBenchmarkEngine {
             txCharacteristic = foundTx
             log("Caratteristiche BLE configurate con successo! TX: ${foundTx.uuid}, RX: ${foundRx.uuid}")
 
-            // Attiva notifiche su TX
             gatt.setCharacteristicNotification(foundTx, true)
             val cccdDescriptor = foundTx.getDescriptor(CCCD_DESCRIPTOR_UUID)
             if (cccdDescriptor != null) {
+                val isIndicate = (foundTx.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0
+                val descriptorValue = if (isIndicate) {
+                    BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                } else {
+                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                }
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeDescriptor(cccdDescriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    gatt.writeDescriptor(cccdDescriptor, descriptorValue)
                 } else {
                     @Suppress("DEPRECATION")
-                    cccdDescriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    cccdDescriptor.value = descriptorValue
                     @Suppress("DEPRECATION")
                     gatt.writeDescriptor(cccdDescriptor)
                 }
@@ -1141,24 +1144,37 @@ class ObdBenchmarkEngine {
     }
 
     /**
-     * Esporta tutti i dati del benchmark in un file CSV formattato
+     * Esporta tutti i dati del benchmark in un file CSV formattato con escaping RFC 4180
      */
     fun exportMetricsToCsv(context: Context, metrics: BenchmarkMetrics): File {
         val fileTimestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val sanitizeName = metrics.deviceName.replace(Regex("[^a-zA-Z0-9_]"), "_")
-        val fileName = "OBD_Benchmark_${sanitizeName}_${fileTimestamp}.csv"
+        val statusPrefix = if (metrics.isPartialSession) "PARZIALE" else "COMPLETO"
+        val fileName = "OBD_Benchmark_${sanitizeName}_${statusPrefix}_${fileTimestamp}.csv"
 
         val exportDir = context.getExternalFilesDir(null) ?: context.filesDir
         val csvFile = File(exportDir, fileName)
 
+        fun escapeCsvField(value: String): String {
+            val clean = value.replace("\r", " ").replace("\n", " ")
+            return if (clean.contains(",") || clean.contains("\"") || clean.contains(";")) {
+                "\"" + clean.replace("\"", "\"\"") + "\""
+            } else {
+                clean
+            }
+        }
+
         csvFile.printWriter(Charsets.UTF_8).use { writer ->
             writer.println("# OBD2 SPEED BENCHMARK METROLOGICO REPORT")
             writer.println("# Data Generazione,${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-            writer.println("# Dispositivo,${metrics.deviceName}")
+            writer.println("# Stato Sessione,${if (metrics.isPartialSession) "INTERROTTA / PARZIALE" else "COMPLETATA"}")
+            writer.println("# Dispositivo,${escapeCsvField(metrics.deviceName)}")
             writer.println("# Indirizzo MAC,${metrics.deviceAddress}")
-            writer.println("# Modalità Benchmark,${metrics.benchmarkMode.label}")
-            writer.println("# Firmware ELM,${metrics.elmVersion}")
-            writer.println("# Protocollo OBD,${metrics.protocolName}")
+            writer.println("# Trasporto Effettivo,${metrics.effectiveTransport.label}")
+            writer.println("# Profilo OBD,${metrics.obdProfile.label}")
+            writer.println("# Firmware ELM,${escapeCsvField(metrics.elmVersion)}")
+            writer.println("# Protocollo Rilevato,${escapeCsvField(metrics.protocolName)}")
+            writer.println("# Timeout Configurato (ms),${metrics.timeoutMs}")
             writer.println("# Campioni Target,${metrics.targetRequestCount}")
             writer.println("# Campioni Effettivi,${metrics.totalCommandsSent}")
             writer.println("# Risposte SUCCESS,${metrics.successCount}")
@@ -1166,9 +1182,10 @@ class ObdBenchmarkEngine {
             writer.println("# Errori Adattatore (ADAPTER_ERROR),${metrics.adapterErrorCount}")
             writer.println("# Timeout (TIMEOUT),${metrics.timeoutCount}")
             writer.println("# Risposte Incomplete (INCOMPLETE_RESPONSE),${metrics.incompleteCount}")
-            writer.println("# Latenza Min (ms),${String.format(Locale.US, "%.3f", metrics.minLatencyMs)}")
-            writer.println("# Latenza Media (ms),${String.format(Locale.US, "%.3f", metrics.avgLatencyMs)}")
-            writer.println("# Latenza Max (ms),${String.format(Locale.US, "%.3f", metrics.maxLatencyMs)}")
+            writer.println("# Tasso di Successo (%),${String.format(Locale.US, "%.1f", metrics.successRatePercent)}")
+            writer.println("# Latenza Min (ms - sui successi),${String.format(Locale.US, "%.3f", metrics.minLatencyMs)}")
+            writer.println("# Latenza Media (ms - sui successi),${String.format(Locale.US, "%.3f", metrics.avgLatencyMs)}")
+            writer.println("# Latenza Max (ms - sui successi),${String.format(Locale.US, "%.3f", metrics.maxLatencyMs)}")
             writer.println("# Percentile P50 (ms),${String.format(Locale.US, "%.3f", metrics.p50Ms)}")
             writer.println("# Percentile P95 (ms),${String.format(Locale.US, "%.3f", metrics.p95Ms)}")
             writer.println("# Percentile P99 (ms),${String.format(Locale.US, "%.3f", metrics.p99Ms)}")
@@ -1176,34 +1193,32 @@ class ObdBenchmarkEngine {
             writer.println("# Jitter (ms),${String.format(Locale.US, "%.3f", metrics.jitterMs)}")
             writer.println("# Intervallo Medio Inter-Richiesta (ms),${String.format(Locale.US, "%.3f", metrics.avgInterRequestIntervalMs)}")
             writer.println("# Velocità (PID/s),${String.format(Locale.US, "%.2f", metrics.commandsPerSecond)}")
-            writer.println("# Throughput (B/s),${String.format(Locale.US, "%.2f", metrics.bytesPerSecond)}")
+            writer.println("# Throughput Applicativo (B/s),${String.format(Locale.US, "%.2f", metrics.appBytesPerSecond)}")
+            writer.println("# Throughput Grezzo (B/s),${String.format(Locale.US, "%.2f", metrics.rawBytesPerSecond)}")
             writer.println("# Durata Totale Test (ms),${metrics.testDurationMs}")
             writer.println("#")
             writer.println("# --- INIZIALIZZAZIONE AUTOMATICA SCRIPT ---")
             if (metrics.initLog.isNotEmpty()) {
                 metrics.initLog.forEachIndexed { idx, entry ->
-                    val cleanEntry = entry.replace(",", ";")
-                    writer.println("# InitStep_${String.format(Locale.US, "%02d", idx + 1)},$cleanEntry")
+                    writer.println("# InitStep_${String.format(Locale.US, "%02d", idx + 1)},${escapeCsvField(entry)}")
                 }
             } else {
-                writer.println("# InitStep_01,Nessun log di inizializzazione registrato")
+                writer.println("# InitStep_01,Nessun log di inizializzazione")
             }
             writer.println("#")
-            writer.println("# --- LOG APPLICATIVI DI SESSIONE ---")
+            writer.println("# --- CONSOLE LOGS DI SESSIONE ---")
             val currentLogs = if (metrics.sessionLogs.isNotEmpty()) metrics.sessionLogs else _logs.value
             if (currentLogs.isNotEmpty()) {
                 currentLogs.forEachIndexed { idx, logLine ->
-                    val cleanLog = logLine.replace(",", ";").replace("\n", " ")
-                    writer.println("# SessionLog_${String.format(Locale.US, "%03d", idx + 1)},$cleanLog")
+                    writer.println("# SessionLog_${String.format(Locale.US, "%03d", idx + 1)},${escapeCsvField(logLine)}")
                 }
             } else {
-                writer.println("# SessionLog_001,Nessun log applicativo registrato")
+                writer.println("# SessionLog_001,Nessun log applicativo")
             }
             writer.println("#")
-            writer.println("Sample_Index,t0_elapsed_ns,t1_elapsed_ns,t2_elapsed_ns,t3_elapsed_ns,Write_ms,TTFB_ms,RX_ms,Total_RTT_ms,InterRequest_Interval_ms,Status,Command,Response")
+            writer.println("Sample_Index,t0_elapsed_ns,t1_elapsed_ns,t2_elapsed_ns,t3_elapsed_ns,Write_ms,TTFB_ms,RX_ms,Total_RTT_ms,InterRequest_Interval_ms,Status,Command,RawResponse,ParsedPayload")
 
             metrics.rawSamples.forEach { sample ->
-                val cleanResp = sample.rawResponse.replace(",", ";")
                 writer.println(
                     "${sample.sampleIndex}," +
                             "${sample.t0Nanos}," +
@@ -1217,7 +1232,8 @@ class ObdBenchmarkEngine {
                             "${String.format(Locale.US, "%.3f", sample.interRequestIntervalMs)}," +
                             "${sample.status.name}," +
                             "${sample.commandSent}," +
-                            "\"$cleanResp\""
+                            "${escapeCsvField(sample.rawResponse)}," +
+                            "${escapeCsvField(sample.parsedResponse)}"
                 )
             }
         }

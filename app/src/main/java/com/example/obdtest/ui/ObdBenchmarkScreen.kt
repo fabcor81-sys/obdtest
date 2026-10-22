@@ -30,8 +30,10 @@ fun ObdBenchmarkScreen(
     onRequestPermissions: () -> Unit,
     onRefreshDevices: () -> Unit,
     onStartScanDevices: () -> Unit,
+    onStopScanDevices: () -> Unit,
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
-    onSelectBenchmarkMode: (BenchmarkMode) -> Unit,
+    onSelectTransportMode: (TransportMode) -> Unit,
+    onSelectProfile: (ObdProfile) -> Unit,
     onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
@@ -78,6 +80,8 @@ fun ObdBenchmarkScreen(
         ) {
             if (!uiState.hasPermissions) {
                 PermissionRequiredCard(onRequestPermissions = onRequestPermissions)
+            } else if (!uiState.isBluetoothEnabled) {
+                BluetoothDisabledCard(onRefreshDevices = onRefreshDevices)
             } else {
                 // 1. Selettore Dispositivo Bluetooth
                 DeviceSelectorCard(
@@ -87,25 +91,29 @@ fun ObdBenchmarkScreen(
                     onSelectDevice = onSelectDevice,
                     onRefreshDevices = onRefreshDevices,
                     onStartScanDevices = onStartScanDevices,
+                    onStopScanDevices = onStopScanDevices,
                     isTesting = uiState.status !is BenchmarkStatus.Idle &&
                             uiState.status !is BenchmarkStatus.Completed &&
+                            uiState.status !is BenchmarkStatus.Cancelled &&
                             uiState.status !is BenchmarkStatus.Error
                 )
 
-                // 2. Controlli Benchmark, Modalità (AT-Only vs ECU) e Selettore Campioni
+                // 2. Controlli Trasporto, Profilo e Numero Campioni
                 TestControlCard(
                     status = uiState.status,
                     statusMessage = uiState.statusMessage,
-                    selectedBenchmarkMode = uiState.selectedBenchmarkMode,
+                    selectedTransportMode = uiState.selectedTransportMode,
+                    selectedProfile = uiState.selectedProfile,
                     selectedRequestCount = uiState.selectedRequestCount,
                     isDeviceSelected = uiState.selectedDevice != null,
-                    onSelectBenchmarkMode = onSelectBenchmarkMode,
+                    onSelectTransportMode = onSelectTransportMode,
+                    onSelectProfile = onSelectProfile,
                     onSelectRequestCount = onSelectRequestCount,
                     onStartTest = onStartTest,
                     onStopTest = onStopTest
                 )
 
-                // 3. Scheda Risultati & Percentili
+                // 3. Scheda Risultati
                 uiState.currentMetrics?.let { metrics ->
                     CurrentMetricsCard(
                         metrics = metrics,
@@ -126,7 +134,7 @@ fun ObdBenchmarkScreen(
                     }
                 }
 
-                // 5. Console Terminal / Logs Espandibili
+                // 5. Console Terminal / Logs
                 ConsoleLogsCard(
                     logs = uiState.logs,
                     modifier = Modifier.weight(1f)
@@ -156,13 +164,13 @@ fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
                 tint = MaterialTheme.colorScheme.onErrorContainer
             )
             Text(
-                text = "Permessi Bluetooth Richiesti",
+                text = "Permessi Bluetooth e Posizione Richiesti",
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
                 color = MaterialTheme.colorScheme.onErrorContainer
             )
             Text(
-                text = "L'app richiede l'accesso al Bluetooth per comunicare con gli adattatori OBD2.",
+                text = "L'app richiede l'accesso al Bluetooth per scansionare e comunicare con gli adattatori OBD2.",
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onErrorContainer
             )
@@ -178,6 +186,43 @@ fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
     }
 }
 
+@Composable
+fun BluetoothDisabledCard(onRefreshDevices: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(
+                Icons.Default.BluetoothDisabled,
+                contentDescription = null,
+                modifier = Modifier.size(48.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = "Bluetooth Spento",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Attiva il Bluetooth nelle impostazioni del tuo smartphone per proseguire.",
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(onClick = onRefreshDevices) {
+                Text("Ricontrolla")
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceSelectorCard(
@@ -187,6 +232,7 @@ fun DeviceSelectorCard(
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
     onRefreshDevices: () -> Unit,
     onStartScanDevices: () -> Unit,
+    onStopScanDevices: () -> Unit,
     isTesting: Boolean
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -211,16 +257,18 @@ fun DeviceSelectorCard(
                 )
 
                 TextButton(
-                    onClick = onStartScanDevices,
-                    enabled = !isTesting && !isScanning
+                    onClick = {
+                        if (isScanning) onStopScanDevices() else onStartScanDevices()
+                    },
+                    enabled = !isTesting
                 ) {
                     if (isScanning) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(14.dp),
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Scansione...", fontSize = 11.sp)
+                        Text("Ferma Scansione", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                     } else {
                         Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
@@ -259,7 +307,7 @@ fun DeviceSelectorCard(
                 ) {
                     if (devices.isEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Nessun dispositivo associato trovato") },
+                            text = { Text("Nessun dispositivo trovato") },
                             onClick = {
                                 expanded = false
                                 onRefreshDevices()
@@ -298,16 +346,19 @@ fun DeviceSelectorCard(
 fun TestControlCard(
     status: BenchmarkStatus,
     statusMessage: String,
-    selectedBenchmarkMode: BenchmarkMode,
+    selectedTransportMode: TransportMode,
+    selectedProfile: ObdProfile,
     selectedRequestCount: Int,
     isDeviceSelected: Boolean,
-    onSelectBenchmarkMode: (BenchmarkMode) -> Unit,
+    onSelectTransportMode: (TransportMode) -> Unit,
+    onSelectProfile: (ObdProfile) -> Unit,
     onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit
 ) {
     val isTesting = status !is BenchmarkStatus.Idle &&
             status !is BenchmarkStatus.Completed &&
+            status !is BenchmarkStatus.Cancelled &&
             status !is BenchmarkStatus.Error
 
     Card(
@@ -318,25 +369,24 @@ fun TestControlCard(
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "MODALITÀ DI BENCHMARK",
-                fontSize = 12.sp,
+                text = "TIPO DI TRASPORTO BLUETOOTH",
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
             )
 
-            // Selettore Modalità (AT-Only vs ECU)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                BenchmarkMode.entries.forEach { mode ->
+                TransportMode.entries.forEach { mode ->
                     FilterChip(
-                        selected = selectedBenchmarkMode == mode,
-                        onClick = { if (!isTesting) onSelectBenchmarkMode(mode) },
-                        label = { Text(mode.label, fontSize = 11.sp) },
+                        selected = selectedTransportMode == mode,
+                        onClick = { if (!isTesting) onSelectTransportMode(mode) },
+                        label = { Text(mode.label, fontSize = 10.sp) },
                         enabled = !isTesting,
                         modifier = Modifier.weight(1f)
                     )
@@ -344,16 +394,34 @@ fun TestControlCard(
             }
 
             Text(
-                text = "NUMERO DI CAMPIONI",
-                fontSize = 12.sp,
+                text = "PROFILO OBD / PROTOCOLLO",
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
             )
 
-            // Selettore campioni (100, 500, 1000)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                ObdProfile.entries.forEach { profile ->
+                    FilterChip(
+                        selected = selectedProfile == profile,
+                        onClick = { if (!isTesting) onSelectProfile(profile) },
+                        label = { Text(profile.label, fontSize = 11.sp) },
+                        enabled = !isTesting,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            Text(
+                text = "NUMERO DI CAMPIONI",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf(100, 500, 1000).forEach { count ->
                     FilterChip(
@@ -375,15 +443,15 @@ fun TestControlCard(
             ) {
                 Text(
                     text = statusMessage,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.weight(1f)
                 )
 
                 if (isTesting) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 3.dp
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
                     )
                 }
             }
@@ -443,7 +511,7 @@ fun CurrentMetricsCard(
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -452,14 +520,14 @@ fun CurrentMetricsCard(
             ) {
                 Column {
                     Text(
-                        text = "RISULTATI: ${metrics.deviceName}",
+                        text = "RISULTATI: ${metrics.deviceName} ${if (metrics.isPartialSession) "[PARZIALE]" else ""}",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                     Text(
-                        text = "Modalità: ${metrics.benchmarkMode.label}",
-                        fontSize = 11.sp,
+                        text = "Trasporto: ${metrics.effectiveTransport.label} | Profilo: ${metrics.obdProfile.label}",
+                        fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                     )
                 }
@@ -474,56 +542,53 @@ fun CurrentMetricsCard(
 
             HorizontalDivider()
 
-            // Prima riga: Latenze Min / Media / Max
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
                 MetricItem(
-                    label = "LATENZA MEDIA",
-                    value = "${String.format(Locale.US, "%.1f", metrics.avgLatencyMs)} ms",
-                    subValue = "Min: ${String.format(Locale.US, "%.1f", metrics.minLatencyMs)}ms | Max: ${String.format(Locale.US, "%.1f", metrics.maxLatencyMs)}ms"
+                    label = "LATENZA MEDIA (SUCCESSI)",
+                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.avgLatencyMs)} ms" else "N/D",
+                    subValue = if (metrics.successCount > 0) "Min: ${String.format(Locale.US, "%.1f", metrics.minLatencyMs)}ms | Max: ${String.format(Locale.US, "%.1f", metrics.maxLatencyMs)}ms" else "Nessun successo"
                 )
 
                 MetricItem(
-                    label = "VELOCITÀ COMANDI",
-                    value = "${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} Cmd/s",
-                    subValue = "SUCCESS: ${metrics.successCount}/${metrics.totalCommandsSent}"
+                    label = "TASSO DI SUCCESSO",
+                    value = "${String.format(Locale.US, "%.1f", metrics.successRatePercent)}%",
+                    subValue = "SUCCESS: ${metrics.successCount}/${metrics.totalCommandsSent} (${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} PID/s)"
                 )
             }
 
             HorizontalDivider()
 
-            // Seconda riga: Percentili P50, P95, P99, Dev. Std e Jitter
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
                 MetricItemSmall(
                     label = "P50 (MEDIANA)",
-                    value = "${String.format(Locale.US, "%.1f", metrics.p50Ms)} ms"
+                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.p50Ms)} ms" else "N/D"
                 )
                 MetricItemSmall(
                     label = "P95",
-                    value = "${String.format(Locale.US, "%.1f", metrics.p95Ms)} ms"
+                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.p95Ms)} ms" else "N/D"
                 )
                 MetricItemSmall(
                     label = "P99",
-                    value = "${String.format(Locale.US, "%.1f", metrics.p99Ms)} ms"
+                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.p99Ms)} ms" else "N/D"
                 )
                 MetricItemSmall(
                     label = "DEV. STD (σ)",
-                    value = "${String.format(Locale.US, "%.1f", metrics.stdDevMs)} ms"
+                    value = if (metrics.successCount > 1) "${String.format(Locale.US, "%.1f", metrics.stdDevMs)} ms" else "N/D"
                 )
                 MetricItemSmall(
                     label = "JITTER",
-                    value = "${String.format(Locale.US, "%.1f", metrics.jitterMs)} ms"
+                    value = if (metrics.successCount > 1) "${String.format(Locale.US, "%.1f", metrics.jitterMs)} ms" else "N/D"
                 )
             }
 
             HorizontalDivider()
 
-            // Dettaglio Classificazione Risposte
             Text(
                 text = "CLASSIFICAZIONE RISPOSTE:",
                 fontSize = 11.sp,
@@ -536,7 +601,7 @@ fun CurrentMetricsCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "OK (SUCCESS): ${metrics.successCount}",
+                    text = "OK: ${metrics.successCount}",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Color(0xFF2E7D32)
@@ -558,7 +623,7 @@ fun CurrentMetricsCard(
                 )
             }
 
-            if (status is BenchmarkStatus.Completed) {
+            if (status is BenchmarkStatus.Completed || status is BenchmarkStatus.Cancelled) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -594,7 +659,7 @@ fun MetricItem(label: String, value: String, subValue: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = label,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
         )
@@ -623,7 +688,7 @@ fun MetricItemSmall(label: String, value: String) {
         )
         Text(
             text = value,
-            fontSize = 14.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer
         )
@@ -636,6 +701,9 @@ fun ComparisonCard(
     currentMetrics: BenchmarkMetrics,
     onClearComparison: () -> Unit
 ) {
+    val isDifferentConfig = baselineMetrics.obdProfile != currentMetrics.obdProfile ||
+            baselineMetrics.effectiveTransport != currentMetrics.effectiveTransport
+
     val p50Diff = currentMetrics.p50Ms - baselineMetrics.p50Ms
     val p50Percent = if (baselineMetrics.p50Ms > 0) {
         ((p50Diff / baselineMetrics.p50Ms) * 100).toInt()
@@ -654,7 +722,7 @@ fun ComparisonCard(
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -673,6 +741,15 @@ fun ComparisonCard(
                 }
             }
 
+            if (isDifferentConfig) {
+                Text(
+                    text = "⚠️ Avviso: I test usano configurazioni o trasporti differenti (${baselineMetrics.effectiveTransport.label}/${baselineMetrics.obdProfile.label} vs ${currentMetrics.effectiveTransport.label}/${currentMetrics.obdProfile.label})",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
             HorizontalDivider()
 
             Row(
@@ -682,7 +759,7 @@ fun ComparisonCard(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("RIFERIMENTO (${baselineMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Text("P50: ${String.format(Locale.US, "%.1f", baselineMetrics.p50Ms)} ms", fontSize = 11.sp)
-                    Text("P95: ${String.format(Locale.US, "%.1f", baselineMetrics.p95Ms)} ms", fontSize = 11.sp)
+                    Text("Successo: ${String.format(Locale.US, "%.1f", baselineMetrics.successRatePercent)}%", fontSize = 10.sp)
                     Text("${String.format(Locale.US, "%.1f", baselineMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold)
                 }
 
@@ -691,7 +768,7 @@ fun ComparisonCard(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("ATTUALE (${currentMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Text("P50: ${String.format(Locale.US, "%.1f", currentMetrics.p50Ms)} ms", fontSize = 11.sp)
-                    Text("P95: ${String.format(Locale.US, "%.1f", currentMetrics.p95Ms)} ms", fontSize = 11.sp)
+                    Text("Successo: ${String.format(Locale.US, "%.1f", currentMetrics.successRatePercent)}%", fontSize = 10.sp)
                     Text("${String.format(Locale.US, "%.1f", currentMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold)
                 }
             }
@@ -703,7 +780,7 @@ fun ComparisonCard(
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
                 val p50Text = if (p50Diff <= 0) {
-                    "${Math.abs(p50Percent)}% più veloce (-${String.format(Locale.US, "%.1f", Math.abs(p50Diff))}ms)"
+                    "${kotlin.math.abs(p50Percent)}% più veloce (-${String.format(Locale.US, "%.1f", kotlin.math.abs(p50Diff))}ms)"
                 } else {
                     "${p50Percent}% più lento (+${String.format(Locale.US, "%.1f", p50Diff)}ms)"
                 }
@@ -755,7 +832,7 @@ fun ConsoleLogsCard(
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1E1E1E)
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
         )
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -770,44 +847,54 @@ fun ConsoleLogsCard(
                     Icon(
                         Icons.Default.Terminal,
                         contentDescription = null,
-                        tint = Color(0xFF00FF00),
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "CONSOLE LOG TRACE (${logs.size})",
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF00FF00)
+                        text = "CONSOLE LOGS (${logs.size})",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
 
-                Icon(
-                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    tint = Color.White
-                )
+                IconButton(
+                    onClick = { expanded = !expanded },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null
+                    )
+                }
             }
 
             AnimatedVisibility(visible = expanded) {
-                Column {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp)
-                            .background(Color.Black, shape = RoundedCornerShape(4.dp))
-                            .padding(8.dp)
-                    ) {
-                        items(logs) { log ->
-                            Text(
-                                text = log,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF00FF00)
-                            )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp)
+                        .background(Color(0xFF1E1E1E), shape = RoundedCornerShape(8.dp))
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(logs) { logLine ->
+                        val color = when {
+                            logLine.contains("ERRORE", ignoreCase = true) || logLine.contains("ERR:", ignoreCase = true) -> Color(0xFFFF5252)
+                            logLine.contains("SUCCESS", ignoreCase = true) || logLine.contains("riuscita", ignoreCase = true) -> Color(0xFF69F0AE)
+                            logLine.contains("[INIT]", ignoreCase = true) -> Color(0xFFFFD740)
+                            else -> Color(0xFFE0E0E0)
                         }
+
+                        Text(
+                            text = logLine,
+                            color = color,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp
+                        )
                     }
                 }
             }

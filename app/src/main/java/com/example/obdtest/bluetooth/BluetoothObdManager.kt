@@ -13,6 +13,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.obdtest.ui.BluetoothDeviceItem
@@ -29,6 +31,12 @@ class BluetoothObdManager(private val context: Context) {
 
     private var receiver: BroadcastReceiver? = null
     private var bleScanCallback: ScanCallback? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var scanTimeoutRunnable: Runnable? = null
+
+    private var isClassicDiscoveryFinished = false
+    private var onScanFinishedCallback: (() -> Unit)? = null
+    private var onScanErrorCallback: ((String) -> Unit)? = null
 
     fun isBluetoothSupported(): Boolean = bluetoothAdapter != null
 
@@ -80,16 +88,30 @@ class BluetoothObdManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun startDiscovery(
         onDeviceFound: (BluetoothDeviceItem) -> Unit,
-        onDiscoveryFinished: () -> Unit
+        onDiscoveryFinished: () -> Unit,
+        onError: ((String) -> Unit)? = null,
+        timeoutMs: Long = 12000L
     ) {
-        if (!hasRequiredPermissions() || !isBluetoothEnabled()) {
-            Log.d(TAG, "Scansione annullata: permessi insufficienti o Bluetooth disattivato")
+        if (!hasRequiredPermissions()) {
+            Log.d(TAG, "Scansione annullata: permessi insufficienti")
+            onError?.invoke("Permessi Bluetooth o Posizione non concessi")
+            onDiscoveryFinished()
+            return
+        }
+
+        if (!isBluetoothEnabled()) {
+            Log.d(TAG, "Scansione annullata: Bluetooth disattivato")
+            onError?.invoke("Bluetooth disattivato")
             onDiscoveryFinished()
             return
         }
 
         stopDiscovery()
         Log.d(TAG, "Avvio ricerca attiva dispositivi Bluetooth Classic e BLE...")
+
+        onScanFinishedCallback = onDiscoveryFinished
+        onScanErrorCallback = onError
+        isClassicDiscoveryFinished = false
 
         // 1. Scansione Classic (BroadcastReceiver)
         val filter = IntentFilter().apply {
@@ -99,7 +121,7 @@ class BluetoothObdManager(private val context: Context) {
 
         receiver = object : BroadcastReceiver() {
             @SuppressLint("MissingPermission")
-            override fun onReceive(context: Context?, intent: Intent?) {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
                     BluetoothDevice.ACTION_FOUND -> {
                         val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -117,7 +139,7 @@ class BluetoothObdManager(private val context: Context) {
                                     rawName.contains("BLE", ignoreCase = true) ||
                                     rawName.contains("VGATE", ignoreCase = true)
 
-                            Log.d(TAG, "Trovato dispositivo: $rawName [${it.address}] (isBle: $isBleDevice)")
+                            Log.d(TAG, "Trovato dispositivo Classic: $rawName [${it.address}]")
                             onDeviceFound(
                                 BluetoothDeviceItem(
                                     name = if (isBleDevice && !rawName.contains("(BLE)", ignoreCase = true)) "$rawName (BLE)" else rawName,
@@ -129,16 +151,21 @@ class BluetoothObdManager(private val context: Context) {
                     }
                     BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
                         Log.d(TAG, "Ricerca dispositivi Classic completata")
+                        isClassicDiscoveryFinished = true
                     }
                 }
             }
         }
 
-        context.registerReceiver(receiver, filter)
-        if (bluetoothAdapter?.isDiscovering == true) {
-            bluetoothAdapter?.cancelDiscovery()
+        try {
+            context.registerReceiver(receiver, filter)
+            if (bluetoothAdapter?.isDiscovering == true) {
+                bluetoothAdapter?.cancelDiscovery()
+            }
+            bluetoothAdapter?.startDiscovery()
+        } catch (e: Exception) {
+            Log.e(TAG, "Errore durante avvio scansione Classic: ${e.message}")
         }
-        bluetoothAdapter?.startDiscovery()
 
         // 2. Scansione BLE (BluetoothLeScanner)
         try {
@@ -155,7 +182,7 @@ class BluetoothObdManager(private val context: Context) {
                         Log.d(TAG, "Trovato dispositivo BLE: $deviceName [${device.address}]")
                         onDeviceFound(
                             BluetoothDeviceItem(
-                                name = "$deviceName (BLE)",
+                                name = if (!deviceName.contains("(BLE)", ignoreCase = true)) "$deviceName (BLE)" else deviceName,
                                 address = device.address,
                                 isBle = true
                             )
@@ -164,7 +191,9 @@ class BluetoothObdManager(private val context: Context) {
 
                     override fun onScanFailed(errorCode: Int) {
                         super.onScanFailed(errorCode)
-                        Log.e(TAG, "Scansione BLE fallita con codice errore: $errorCode")
+                        val errMsg = "Scansione BLE fallita con codice errore $errorCode"
+                        Log.e(TAG, errMsg)
+                        onScanErrorCallback?.invoke(errMsg)
                     }
                 }
 
@@ -173,17 +202,32 @@ class BluetoothObdManager(private val context: Context) {
                 Log.e(TAG, "BluetoothLeScanner non disponibile")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Errore durante avvio scansione BLE: ${e.message}")
+            val errMsg = "Errore durante avvio scansione BLE: ${e.message}"
+            Log.e(TAG, errMsg)
+            onError?.invoke(errMsg)
         }
+
+        // Timeout di sicurezza per terminare la scansione
+        scanTimeoutRunnable = Runnable {
+            Log.d(TAG, "Timeout scansione raggiunto (${timeoutMs}ms). Arresto scansione...")
+            stopDiscovery()
+        }
+        handler.postDelayed(scanTimeoutRunnable!!, timeoutMs)
     }
 
     @SuppressLint("MissingPermission")
     fun stopDiscovery() {
+        scanTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+            scanTimeoutRunnable = null
+        }
+
         try {
             if (bluetoothAdapter?.isDiscovering == true) {
                 bluetoothAdapter?.cancelDiscovery()
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "Errore durante annullamento discovery Classic: ${e.message}")
         }
 
         try {
@@ -199,14 +243,25 @@ class BluetoothObdManager(private val context: Context) {
                 bluetoothAdapter?.bluetoothLeScanner?.stopScan(callback)
                 bleScanCallback = null
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "Errore durante arresto scanner BLE: ${e.message}")
         }
+
+        val callbackToInvoke = onScanFinishedCallback
+        onScanFinishedCallback = null
+        onScanErrorCallback = null
+        callbackToInvoke?.invoke()
     }
 
     @SuppressLint("MissingPermission")
     fun getDeviceByAddress(address: String): BluetoothDevice? {
         if (!hasRequiredPermissions() || !isBluetoothEnabled()) return null
-        return bluetoothAdapter?.getRemoteDevice(address)
+        return try {
+            bluetoothAdapter?.getRemoteDevice(address)
+        } catch (e: Exception) {
+            Log.e(TAG, "Indirizzo Bluetooth non valido o dispositivo non trovato: $address (${e.message})")
+            null
+        }
     }
 
     companion object {
