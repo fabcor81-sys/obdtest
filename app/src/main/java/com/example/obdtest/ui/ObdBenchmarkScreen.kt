@@ -60,12 +60,13 @@ fun ObdBenchmarkScreen(
                         Text(
                             text = "OBD2 Benchmark Metrologico",
                             fontWeight = FontWeight.ExtraBold,
-                            fontSize = 20.sp,
+                            fontSize = 18.sp,
                             color = RacingYellow
                         )
                         Text(
                             text = "Motorsport Performance & Latenza Adattatori OBD2",
                             style = MaterialTheme.typography.bodySmall,
+                            fontSize = 11.sp,
                             color = RacingTextSecondary
                         )
                     }
@@ -91,15 +92,15 @@ fun ObdBenchmarkScreen(
                 .fillMaxSize()
                 .background(RacingBackground)
                 .padding(innerPadding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (!uiState.hasPermissions) {
                 PermissionRequiredCard(onRequestPermissions = onRequestPermissions)
             } else if (!uiState.isBluetoothEnabled) {
                 BluetoothDisabledCard(onRefreshDevices = onRefreshDevices)
             } else {
-                // 1. Selettore Dispositivo Bluetooth
+                // 1. Selettore Dispositivo Bluetooth Compattato
                 DeviceSelectorCard(
                     devices = uiState.pairedDevices,
                     selectedDevice = uiState.selectedDevice,
@@ -114,7 +115,7 @@ fun ObdBenchmarkScreen(
                             uiState.status !is BenchmarkStatus.Error
                 )
 
-                // 2. Controlli Trasporto e Profilo (Automatico in un solo tocco)
+                // 2. Controlli Trasporto, Profilo (Affiancati Orizzontalmente) e Pulsante Avvio
                 TestControlCard(
                     status = uiState.status,
                     statusMessage = uiState.statusMessage,
@@ -167,25 +168,26 @@ fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
                 Icons.Default.BluetoothDisabled,
                 contentDescription = null,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(36.dp),
                 tint = RacingError
             )
             Text(
                 text = "Permessi Bluetooth e Posizione Richiesti",
                 fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
+                fontSize = 16.sp,
                 color = RacingText
             )
             Text(
                 text = "L'app richiede l'accesso al Bluetooth per scansionare e comunicare con gli adattatori OBD2.",
                 textAlign = TextAlign.Center,
+                fontSize = 12.sp,
                 color = RacingTextSecondary
             )
             Button(
@@ -210,25 +212,26 @@ fun BluetoothDisabledCard(onRefreshDevices: () -> Unit) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
                 Icons.Default.BluetoothDisabled,
                 contentDescription = null,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(36.dp),
                 tint = RacingYellow
             )
             Text(
                 text = "Bluetooth Spento",
                 fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
+                fontSize = 16.sp,
                 color = RacingText
             )
             Text(
                 text = "Attiva il Bluetooth nelle impostazioni del tuo smartphone per proseguire.",
                 textAlign = TextAlign.Center,
+                fontSize = 12.sp,
                 color = RacingTextSecondary
             )
             Button(
@@ -264,7 +267,7 @@ fun DeviceSelectorCard(
             containerColor = RacingSurface
         )
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -272,7 +275,7 @@ fun DeviceSelectorCard(
             ) {
                 Text(
                     text = "DISPOSITIVO OBD2 BLUETOOTH",
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
                     color = RacingYellow
                 )
@@ -281,30 +284,31 @@ fun DeviceSelectorCard(
                     onClick = {
                         if (isScanning) onStopScanDevices() else onStartScanDevices()
                     },
-                    enabled = !isTesting
+                    enabled = !isTesting,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
                 ) {
                     if (isScanning) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
+                            modifier = Modifier.size(12.dp),
                             strokeWidth = 2.dp,
                             color = RacingError
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Ferma Scansione", fontSize = 11.sp, color = RacingError)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Ferma Scansione", fontSize = 10.sp, color = RacingError)
                     } else {
                         Icon(
                             Icons.AutoMirrored.Filled.BluetoothSearching,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(14.dp),
                             tint = RacingYellow
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Scansiona Dispositivi", fontSize = 11.sp, color = RacingYellow)
+                        Text("Scansiona", fontSize = 10.sp, color = RacingYellow)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(2.dp))
 
             ExposedDropdownMenuBox(
                 expanded = expanded && !isTesting,
@@ -320,9 +324,14 @@ fun DeviceSelectorCard(
                         Icon(
                             Icons.Default.Bluetooth,
                             contentDescription = null,
+                            modifier = Modifier.size(18.dp),
                             tint = RacingYellow
                         )
                     },
+                    textStyle = LocalTextStyle.current.copy(
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = RacingText,
                         unfocusedTextColor = RacingText,
@@ -334,6 +343,7 @@ fun DeviceSelectorCard(
                     modifier = Modifier
                         .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth()
+                        .height(48.dp)
                 )
 
                 ExposedDropdownMenu(
@@ -343,7 +353,7 @@ fun DeviceSelectorCard(
                 ) {
                     if (devices.isEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Nessun dispositivo trovato", color = RacingTextSecondary) },
+                            text = { Text("Nessun dispositivo trovato", color = RacingTextSecondary, fontSize = 12.sp) },
                             onClick = {
                                 expanded = false
                                 onRefreshDevices()
@@ -354,10 +364,10 @@ fun DeviceSelectorCard(
                             DropdownMenuItem(
                                 text = {
                                     Column {
-                                        Text(device.name, fontWeight = FontWeight.SemiBold, color = RacingText)
+                                        Text(device.name, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = RacingText)
                                         Text(
                                             device.address,
-                                            fontSize = 11.sp,
+                                            fontSize = 10.sp,
                                             color = RacingTextSecondary
                                         )
                                     }
@@ -370,6 +380,7 @@ fun DeviceSelectorCard(
                                     Icon(
                                         Icons.Default.BluetoothConnected,
                                         contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
                                         tint = RacingYellow
                                     )
                                 }
@@ -406,25 +417,26 @@ fun TestControlCard(
         )
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            // Riga 1: Tipo Trasporto Bluetooth
             Text(
                 text = "TIPO DI TRASPORTO BLUETOOTH",
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = RacingYellow
             )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 TransportMode.entries.forEach { mode ->
                     FilterChip(
                         selected = selectedTransportMode == mode,
                         onClick = { if (!isTesting) onSelectTransportMode(mode) },
-                        label = { Text(mode.label, fontSize = 10.sp, color = if (selectedTransportMode == mode) RacingBackground else RacingText) },
+                        label = { Text(mode.label, fontSize = 9.sp, color = if (selectedTransportMode == mode) RacingBackground else RacingText) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = RacingYellow,
                             containerColor = RacingSurfaceSecondary
@@ -435,43 +447,44 @@ fun TestControlCard(
                 }
             }
 
+            // Riga 2: Profilo OBD / Protocollo Affiancati Orizzontalmente
             Text(
                 text = "PROFILO OBD / PROTOCOLLO",
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = RacingYellow
             )
 
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 ObdProfile.entries.forEach { profile ->
+                    val shortLabel = when (profile) {
+                        ObdProfile.AT_ONLY -> "AT-Only (ATI)"
+                        ObdProfile.GENERIC_AUTO -> "OBD Standard"
+                        ObdProfile.LOTUS_ABS -> "Lotus ABS"
+                    }
                     FilterChip(
                         selected = selectedProfile == profile,
                         onClick = { if (!isTesting) onSelectProfile(profile) },
-                        label = { Text(profile.label, fontSize = 11.sp, color = if (selectedProfile == profile) RacingBackground else RacingText) },
+                        label = { Text(shortLabel, fontSize = 9.sp, color = if (selectedProfile == profile) RacingBackground else RacingText) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = RacingYellow,
                             containerColor = RacingSurfaceSecondary
                         ),
                         enabled = !isTesting,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
 
             if (selectedProfile == ObdProfile.LOTUS_ABS) {
                 Text(
-                    text = "⚙️ Inizializzazione Automatica Lotus ABS:\nATZ ➔ AT L1 ➔ AT SH 812BF1 ➔ AT WM 812BF13E ➔ AT SP 5 (100 campioni)",
-                    fontSize = 10.sp,
+                    text = "⚙️ Lotus ABS: ATZ ➔ AT L1 ➔ AT SH 812BF1 ➔ AT WM 812BF13E ➔ AT SP 5",
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = RacingYellow,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                )
-            } else if (selectedProfile == ObdProfile.GENERIC_AUTO) {
-                Text(
-                    text = "⚙️ Inizializzazione Automatica OBD Standard (AT SP 0 / 100 campioni)",
-                    fontSize = 10.sp,
-                    color = RacingTextSecondary,
-                    modifier = Modifier.padding(vertical = 2.dp)
+                    color = RacingYellow
                 )
             }
 
@@ -485,6 +498,7 @@ fun TestControlCard(
                 Text(
                     text = statusMessage,
                     style = MaterialTheme.typography.bodySmall,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Medium,
                     color = RacingText,
                     modifier = Modifier.weight(1f)
@@ -492,7 +506,7 @@ fun TestControlCard(
 
                 if (isTesting) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
                         color = RacingYellow
                     )
@@ -509,7 +523,7 @@ fun TestControlCard(
                 )
             }
 
-            // UNICO GRANDE PULSANTE D'AZIONE
+            // UNICO GRANDE PULSANTE D'AZIONE COMPATTO
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -523,11 +537,11 @@ fun TestControlCard(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(44.dp)
                     ) {
-                        Icon(Icons.Default.Stop, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("ARRESTA BENCHMARK (STOP)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("ARRESTA BENCHMARK (STOP)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 } else {
                     Button(
@@ -541,11 +555,11 @@ fun TestControlCard(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(44.dp)
                     ) {
-                        Icon(Icons.Default.Speed, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("AVVIA BENCHMARK (100 CAMPIONI)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("AVVIA BENCHMARK METROLOGICO", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 }
             }
@@ -567,8 +581,8 @@ fun CurrentMetricsCard(
         )
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -578,20 +592,20 @@ fun CurrentMetricsCard(
                 Column {
                     Text(
                         text = "RISULTATI: ${metrics.deviceName} ${if (metrics.isPartialSession) "[PARZIALE]" else ""}",
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = RacingYellow
                     )
                     Text(
-                        text = "Trasporto: ${metrics.effectiveTransport.label} | Profilo: ${metrics.obdProfile.label} (${metrics.measuredCommand})",
-                        fontSize = 10.sp,
+                        text = "Trasporto: ${metrics.effectiveTransport.label} | Profilo: ${metrics.obdProfile.label}",
+                        fontSize = 9.sp,
                         color = RacingTextSecondary
                     )
                 }
 
                 Text(
                     text = metrics.elmVersion,
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = RacingYellow
                 )
@@ -646,36 +660,29 @@ fun CurrentMetricsCard(
 
             HorizontalDivider(color = RacingSurfaceSecondary)
 
-            Text(
-                text = "CLASSIFICAZIONE RISPOSTE:",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = RacingText
-            )
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
                     text = "OK: ${metrics.successCount}",
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     color = RacingSuccess
                 )
                 Text(
                     text = "ECU ERR: ${metrics.ecuErrorCount}",
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     color = if (metrics.ecuErrorCount > 0) RacingError else RacingTextSecondary
                 )
                 Text(
                     text = "ADAPTER ERR: ${metrics.adapterErrorCount}",
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     color = if (metrics.adapterErrorCount > 0) RacingYellow else RacingTextSecondary
                 )
                 Text(
                     text = "TIMEOUT: ${metrics.timeoutCount}",
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     color = if (metrics.timeoutCount > 0) RacingError else RacingTextSecondary
                 )
             }
@@ -683,7 +690,7 @@ fun CurrentMetricsCard(
             if (status is BenchmarkStatus.Completed || status is BenchmarkStatus.Cancelled) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     OutlinedButton(
                         onClick = onExportCsv,
@@ -692,9 +699,9 @@ fun CurrentMetricsCard(
                         ),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Esporta CSV", fontSize = 12.sp)
+                        Text("Esporta CSV", fontSize = 11.sp)
                     }
 
                     Button(
@@ -705,9 +712,9 @@ fun CurrentMetricsCard(
                         ),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Bookmark, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Bookmark, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Salva Riferimento", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Salva Riferimento", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -720,19 +727,19 @@ fun MetricItem(label: String, value: String, subValue: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = label,
-            fontSize = 10.sp,
+            fontSize = 9.sp,
             fontWeight = FontWeight.Bold,
             color = RacingTextSecondary
         )
         Text(
             text = value,
-            fontSize = 20.sp,
+            fontSize = 18.sp,
             fontWeight = FontWeight.ExtraBold,
             color = RacingYellow
         )
         Text(
             text = subValue,
-            fontSize = 10.sp,
+            fontSize = 9.sp,
             color = RacingText
         )
     }
@@ -743,13 +750,13 @@ fun MetricItemSmall(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = label,
-            fontSize = 9.sp,
+            fontSize = 8.sp,
             fontWeight = FontWeight.Bold,
             color = RacingTextSecondary
         )
         Text(
             text = value,
-            fontSize = 13.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             color = RacingText
         )
@@ -782,8 +789,8 @@ fun ComparisonCard(
         )
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -792,20 +799,20 @@ fun ComparisonCard(
             ) {
                 Text(
                     text = "CONFRONTO PRESTAZIONI",
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.ExtraBold,
                     color = RacingYellow
                 )
 
                 TextButton(onClick = onClearComparison) {
-                    Text("Cancella", fontSize = 12.sp, color = RacingTextSecondary)
+                    Text("Cancella", fontSize = 11.sp, color = RacingTextSecondary)
                 }
             }
 
             if (isDifferentConfig) {
                 Text(
                     text = "⚠️ Avviso: I test usano configurazioni o trasporti differenti (${baselineMetrics.effectiveTransport.label}/${baselineMetrics.obdProfile.label} vs ${currentMetrics.effectiveTransport.label}/${currentMetrics.obdProfile.label})",
-                    fontSize = 10.sp,
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = RacingError
                 )
@@ -818,19 +825,19 @@ fun ComparisonCard(
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("RIFERIMENTO (${baselineMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
-                    Text("P50: ${String.format(Locale.US, "%.1f", baselineMetrics.p50Ms)} ms", fontSize = 11.sp, color = RacingText)
-                    Text("Successo: ${String.format(Locale.US, "%.1f", baselineMetrics.successRatePercent)}%", fontSize = 10.sp, color = RacingTextSecondary)
-                    Text("${String.format(Locale.US, "%.1f", baselineMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow)
+                    Text("RIFERIMENTO (${baselineMetrics.deviceName})", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
+                    Text("P50: ${String.format(Locale.US, "%.1f", baselineMetrics.p50Ms)} ms", fontSize = 10.sp, color = RacingText)
+                    Text("Successo: ${String.format(Locale.US, "%.1f", baselineMetrics.successRatePercent)}%", fontSize = 9.sp, color = RacingTextSecondary)
+                    Text("${String.format(Locale.US, "%.1f", baselineMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow, fontSize = 11.sp)
                 }
 
-                Text("VS", fontWeight = FontWeight.Black, fontSize = 16.sp, color = RacingYellow)
+                Text("VS", fontWeight = FontWeight.Black, fontSize = 14.sp, color = RacingYellow)
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("ATTUALE (${currentMetrics.deviceName})", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
-                    Text("P50: ${String.format(Locale.US, "%.1f", currentMetrics.p50Ms)} ms", fontSize = 11.sp, color = RacingText)
-                    Text("Successo: ${String.format(Locale.US, "%.1f", currentMetrics.successRatePercent)}%", fontSize = 10.sp, color = RacingTextSecondary)
-                    Text("${String.format(Locale.US, "%.1f", currentMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow)
+                    Text("ATTUALE (${currentMetrics.deviceName})", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
+                    Text("P50: ${String.format(Locale.US, "%.1f", currentMetrics.p50Ms)} ms", fontSize = 10.sp, color = RacingText)
+                    Text("Successo: ${String.format(Locale.US, "%.1f", currentMetrics.successRatePercent)}%", fontSize = 9.sp, color = RacingTextSecondary)
+                    Text("${String.format(Locale.US, "%.1f", currentMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow, fontSize = 11.sp)
                 }
             }
 
@@ -853,20 +860,20 @@ fun ComparisonCard(
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Diff. P50 Mediana", fontSize = 10.sp, color = RacingTextSecondary)
+                    Text("Diff. P50 Mediana", fontSize = 9.sp, color = RacingTextSecondary)
                     Text(
                         text = p50Text,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = if (p50Diff <= 0) RacingSuccess else RacingError
                     )
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Diff. Velocità", fontSize = 10.sp, color = RacingTextSecondary)
+                    Text("Diff. Velocità", fontSize = 9.sp, color = RacingTextSecondary)
                     Text(
                         text = pidsText,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = if (pidsDiff >= 0) RacingSuccess else RacingError
                     )
@@ -896,7 +903,7 @@ fun ConsoleLogsCard(
             containerColor = RacingSurface
         )
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -908,13 +915,13 @@ fun ConsoleLogsCard(
                     Icon(
                         Icons.Default.Terminal,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(14.dp),
                         tint = RacingYellow
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "CONSOLE LOGS (${logs.size})",
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = RacingYellow
                     )
@@ -922,7 +929,7 @@ fun ConsoleLogsCard(
 
                 IconButton(
                     onClick = { expanded = !expanded },
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(20.dp)
                 ) {
                     Icon(
                         if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
@@ -937,9 +944,9 @@ fun ConsoleLogsCard(
                     state = listState,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp)
+                        .height(140.dp)
                         .background(Color(0xFF050505), shape = RoundedCornerShape(8.dp))
-                        .padding(8.dp),
+                        .padding(6.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     items(logs) { logLine ->
@@ -954,8 +961,8 @@ fun ConsoleLogsCard(
                             text = logLine,
                             color = color,
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            lineHeight = 12.sp
+                            fontSize = 9.sp,
+                            lineHeight = 11.sp
                         )
                     }
                 }
