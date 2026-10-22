@@ -38,6 +38,13 @@ import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.math.sqrt
 
+data class RawCommandResult(
+    val rawResponse: String,
+    val cleanResponse: String,
+    val hasPrompt: Boolean,
+    val isTimeout: Boolean
+)
+
 class ObdBenchmarkEngine {
 
     companion object {
@@ -194,21 +201,19 @@ class ObdBenchmarkEngine {
 
             val initLogEntries = mutableListOf<String>()
 
-            fun sendInitCmd(cmd: String, cmdTimeout: Long = timeoutMs): String {
-                val resp = executeRawCommand(cmd, cmdTimeout)
-                val clean = ObdResponseParser.cleanRawResponse(resp, cmd)
-                val entry = "CMD: ${cmd.trim()} -> RESP: ${if (clean.isBlank()) "OK/NO_RESP" else clean}"
+            fun sendInitCmd(cmd: String, cmdTimeout: Long = timeoutMs): RawCommandResult {
+                val res = executeRawCommand(cmd, cmdTimeout)
+                val entry = "CMD: ${cmd.trim()} -> RESP: ${if (res.cleanResponse.isBlank()) "OK/NO_RESP" else res.cleanResponse}"
                 initLogEntries.add(entry)
                 log("[INIT] $entry")
-                return resp
+                return res
             }
 
-            fun verifyInitResp(cmdName: String, resp: String): Boolean {
-                val clean = ObdResponseParser.cleanRawResponse(resp, cmdName).uppercase(Locale.US)
-                val hasPrompt = resp.contains(">")
-                val isOk = hasPrompt && clean.isNotBlank() && !clean.contains("ERROR") && !clean.contains("?")
+            fun verifyInitResp(cmdName: String, res: RawCommandResult): Boolean {
+                val cleanUpper = res.cleanResponse.uppercase(Locale.US)
+                val isOk = res.hasPrompt && !res.isTimeout && !cleanUpper.contains("ERROR") && !cleanUpper.contains("?")
                 if (!isOk) {
-                    log("ERRORE INIZIALIZZAZIONE [$cmdName]: risposta non valida -> '$clean'", isError = true)
+                    log("ERRORE INIZIALIZZAZIONE [$cmdName]: risposta non valida -> '${res.cleanResponse}' (hasPrompt=${res.hasPrompt}, isTimeout=${res.isTimeout})", isError = true)
                 }
                 return isOk
             }
@@ -223,18 +228,18 @@ class ObdBenchmarkEngine {
                     sendInitCmd("ATL0\r")
                     sendInitCmd("ATH0\r")
 
-                    val atiResp = sendInitCmd("ATI\r")
-                    elmVersion = if (atiResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atiResp, "ATI") else "ELM327 / Chip AT"
+                    val atiRes = sendInitCmd("ATI\r")
+                    elmVersion = if (atiRes.cleanResponse.isNotBlank()) atiRes.cleanResponse else "ELM327 / Chip AT"
                     protocol = "N/D (AT-Only)"
                 }
 
                 ObdProfile.GENERIC_AUTO -> {
                     log("Inizializzazione OBD Standard Auto Protocol (AT SP 0)...")
-                    val atzResp = sendInitCmd("AT Z\r", 3000L)
+                    val atzRes = sendInitCmd("AT Z\r", 3000L)
                     kotlinx.coroutines.delay(600)
                     clearBuffer()
 
-                    elmVersion = if (atzResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atzResp, "AT Z") else "ELM327 v1.5"
+                    elmVersion = if (atzRes.cleanResponse.isNotBlank()) atzRes.cleanResponse else "ELM327 v1.5"
 
                     sendInitCmd("ATE0\r")
                     sendInitCmd("ATL0\r")
@@ -242,29 +247,29 @@ class ObdBenchmarkEngine {
                     sendInitCmd("AT M0\r")
                     sendInitCmd("AT SP 0\r")
 
-                    val atdpResp = sendInitCmd("AT DP\r")
-                    protocol = if (atdpResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atdpResp, "AT DP") else "Auto OBD2"
+                    val atdpRes = sendInitCmd("AT DP\r")
+                    protocol = if (atdpRes.cleanResponse.isNotBlank()) atdpRes.cleanResponse else "Auto OBD2"
                 }
 
                 ObdProfile.LOTUS_ABS -> {
                     log("Inizializzazione ECU ABS Lotus (Sequenza inderogabile: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5)...")
-                    val atzResp = sendInitCmd("AT Z\r", 3000L)
+                    val atzRes = sendInitCmd("AT Z\r", 3000L)
                     kotlinx.coroutines.delay(800)
                     clearBuffer()
 
-                    elmVersion = if (atzResp.isNotBlank()) ObdResponseParser.cleanRawResponse(atzResp, "AT Z") else "ELM327"
+                    elmVersion = if (atzRes.cleanResponse.isNotBlank()) atzRes.cleanResponse else "ELM327"
 
-                    val respL1 = sendInitCmd("AT L1\r")
-                    if (!verifyInitResp("AT L1", respL1)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT L1")
+                    val resL1 = sendInitCmd("AT L1\r")
+                    if (!verifyInitResp("AT L1", resL1)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT L1")
 
-                    val respSH = sendInitCmd("AT SH 812BF1\r")
-                    if (!verifyInitResp("AT SH 812BF1", respSH)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SH 812BF1")
+                    val resSH = sendInitCmd("AT SH 812BF1\r")
+                    if (!verifyInitResp("AT SH 812BF1", resSH)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SH 812BF1")
 
-                    val respWM = sendInitCmd("AT WM 812BF13E\r")
-                    if (!verifyInitResp("AT WM 812BF13E", respWM)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT WM 812BF13E")
+                    val resWM = sendInitCmd("AT WM 812BF13E\r")
+                    if (!verifyInitResp("AT WM 812BF13E", resWM)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT WM 812BF13E")
 
-                    val respSP = sendInitCmd("AT SP 5\r")
-                    if (!verifyInitResp("AT SP 5", respSP)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SP 5")
+                    val resSP = sendInitCmd("AT SP 5\r")
+                    if (!verifyInitResp("AT SP 5", resSP)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SP 5")
 
                     protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
                 }
@@ -844,7 +849,7 @@ class ObdBenchmarkEngine {
         return sortedValues[lower] * (1.0 - weight) + sortedValues[upper] * weight
     }
 
-    private fun executeRawCommand(command: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS): String {
+    private fun executeRawCommand(command: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS): RawCommandResult {
         return if (isBleMode) {
             executeRawCommandBle(command, timeoutMs)
         } else {
@@ -852,9 +857,9 @@ class ObdBenchmarkEngine {
         }
     }
 
-    private fun executeRawCommandClassic(command: String, timeoutMs: Long): String {
-        val out = outputStream ?: return ""
-        val input = inputStream ?: return ""
+    private fun executeRawCommandClassic(command: String, timeoutMs: Long): RawCommandResult {
+        val out = outputStream ?: return RawCommandResult("", "", hasPrompt = false, isTimeout = true)
+        val input = inputStream ?: return RawCommandResult("", "", hasPrompt = false, isTimeout = true)
 
         try {
             clearBuffer()
@@ -880,17 +885,26 @@ class ObdBenchmarkEngine {
                 }
             }
 
-            return ObdResponseParser.cleanRawResponse(responseBuilder.toString(), command)
+            val raw = responseBuilder.toString()
+            val hasPrompt = raw.contains(">")
+            val clean = ObdResponseParser.cleanRawResponse(raw, command)
+
+            return RawCommandResult(
+                rawResponse = raw,
+                cleanResponse = clean,
+                hasPrompt = hasPrompt,
+                isTimeout = !hasPrompt
+            )
         } catch (e: Exception) {
             log("Errore comando raw Classic '$command': ${e.message}")
-            return ""
+            return RawCommandResult("", "", hasPrompt = false, isTimeout = true)
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun executeRawCommandBle(command: String, timeoutMs: Long): String {
-        val gatt = bluetoothGatt ?: return ""
-        val rxChar = rxCharacteristic ?: return ""
+    private fun executeRawCommandBle(command: String, timeoutMs: Long): RawCommandResult {
+        val gatt = bluetoothGatt ?: return RawCommandResult("", "", hasPrompt = false, isTimeout = true)
+        val rxChar = rxCharacteristic ?: return RawCommandResult("", "", hasPrompt = false, isTimeout = true)
 
         synchronized(bleLock) {
             bleResponseBuffer.clear()
@@ -933,7 +947,15 @@ class ObdBenchmarkEngine {
             }
         }
 
-        return ObdResponseParser.cleanRawResponse(response, command)
+        val hasPrompt = response.contains(">")
+        val clean = ObdResponseParser.cleanRawResponse(response, command)
+
+        return RawCommandResult(
+            rawResponse = response,
+            cleanResponse = clean,
+            hasPrompt = hasPrompt,
+            isTimeout = !hasPrompt
+        )
     }
 
     private fun clearBuffer() {
