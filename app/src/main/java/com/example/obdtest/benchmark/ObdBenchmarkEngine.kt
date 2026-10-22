@@ -119,7 +119,17 @@ class ObdBenchmarkEngine {
         onMetricsUpdate: (BenchmarkMetrics) -> Unit
     ): BenchmarkMetrics = withContext(Dispatchers.IO) {
         isRunning = true
-        isBleMode = isBle
+
+        val deviceNameUpper = (device.name ?: "").uppercase(Locale.US)
+        val effectiveIsBle = isBle ||
+                device.type == BluetoothDevice.DEVICE_TYPE_LE ||
+                device.type == BluetoothDevice.DEVICE_TYPE_DUAL ||
+                deviceNameUpper.contains("NORAUTO") ||
+                deviceNameUpper.contains("BLE") ||
+                deviceNameUpper.contains("VGATE") ||
+                deviceNameUpper.contains("GATT")
+
+        isBleMode = effectiveIsBle
 
         var metrics = BenchmarkMetrics(
             deviceName = device.name ?: device.address,
@@ -129,7 +139,7 @@ class ObdBenchmarkEngine {
         )
 
         try {
-            val transportTypeStr = if (isBle) "BLE (GATT)" else "Classic (SPP)"
+            val transportTypeStr = if (isBleMode) "BLE (GATT)" else "Classic (SPP)"
             log("Connessione a ${device.name ?: device.address} via $transportTypeStr...")
             onStatusUpdate(BenchmarkStatus.Connecting, "Connessione $transportTypeStr in corso a ${device.name ?: device.address}...")
 

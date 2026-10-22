@@ -62,10 +62,17 @@ class BluetoothObdManager(private val context: Context) {
 
         val bondedDevices: Set<BluetoothDevice>? = bluetoothAdapter?.bondedDevices
         return bondedDevices?.map { device ->
+            val rawName = device.name ?: "Sconosciuto (${device.address})"
+            val isBleDevice = device.type == BluetoothDevice.DEVICE_TYPE_LE ||
+                    device.type == BluetoothDevice.DEVICE_TYPE_DUAL ||
+                    rawName.contains("NORAUTO", ignoreCase = true) ||
+                    rawName.contains("BLE", ignoreCase = true) ||
+                    rawName.contains("VGATE", ignoreCase = true)
+
             BluetoothDeviceItem(
-                name = device.name ?: "Sconosciuto (${device.address})",
+                name = if (isBleDevice && !rawName.contains("(BLE)", ignoreCase = true)) "$rawName (BLE)" else rawName,
                 address = device.address,
-                isBle = false
+                isBle = isBleDevice
             )
         } ?: emptyList()
     }
@@ -103,13 +110,19 @@ class BluetoothObdManager(private val context: Context) {
                         }
 
                         device?.let {
-                            val deviceName = it.name ?: "Dispositivo Bluetooth (${it.address})"
-                            Log.d(TAG, "Trovato dispositivo Classic: $deviceName [${it.address}]")
+                            val rawName = it.name ?: "Dispositivo Bluetooth (${it.address})"
+                            val isBleDevice = it.type == BluetoothDevice.DEVICE_TYPE_LE ||
+                                    it.type == BluetoothDevice.DEVICE_TYPE_DUAL ||
+                                    rawName.contains("NORAUTO", ignoreCase = true) ||
+                                    rawName.contains("BLE", ignoreCase = true) ||
+                                    rawName.contains("VGATE", ignoreCase = true)
+
+                            Log.d(TAG, "Trovato dispositivo: $rawName [${it.address}] (isBle: $isBleDevice)")
                             onDeviceFound(
                                 BluetoothDeviceItem(
-                                    name = deviceName,
+                                    name = if (isBleDevice && !rawName.contains("(BLE)", ignoreCase = true)) "$rawName (BLE)" else rawName,
                                     address = it.address,
-                                    isBle = false
+                                    isBle = isBleDevice
                                 )
                             )
                         }
