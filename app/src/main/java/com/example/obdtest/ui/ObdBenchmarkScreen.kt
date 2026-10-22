@@ -31,6 +31,7 @@ fun ObdBenchmarkScreen(
     onRefreshDevices: () -> Unit,
     onStartScanDevices: () -> Unit,
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
+    onSelectBenchmarkMode: (BenchmarkMode) -> Unit,
     onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
@@ -91,12 +92,14 @@ fun ObdBenchmarkScreen(
                             uiState.status !is BenchmarkStatus.Error
                 )
 
-                // 2. Controlli Benchmark e Selettore Numero Campioni (100, 500, 1000)
+                // 2. Controlli Benchmark, Modalità (AT-Only vs ECU) e Selettore Campioni
                 TestControlCard(
                     status = uiState.status,
                     statusMessage = uiState.statusMessage,
+                    selectedBenchmarkMode = uiState.selectedBenchmarkMode,
                     selectedRequestCount = uiState.selectedRequestCount,
                     isDeviceSelected = uiState.selectedDevice != null,
+                    onSelectBenchmarkMode = onSelectBenchmarkMode,
                     onSelectRequestCount = onSelectRequestCount,
                     onStartTest = onStartTest,
                     onStopTest = onStopTest
@@ -112,7 +115,7 @@ fun ObdBenchmarkScreen(
                     )
                 }
 
-                // 4. Sezione Confronto (Norauto vs vLinker MC+)
+                // 4. Sezione Confronto (es. Norauto vs vLinker)
                 uiState.savedComparisonMetrics?.let { savedMetrics ->
                     uiState.currentMetrics?.let { currentMetrics ->
                         ComparisonCard(
@@ -295,8 +298,10 @@ fun DeviceSelectorCard(
 fun TestControlCard(
     status: BenchmarkStatus,
     statusMessage: String,
+    selectedBenchmarkMode: BenchmarkMode,
     selectedRequestCount: Int,
     isDeviceSelected: Boolean,
+    onSelectBenchmarkMode: (BenchmarkMode) -> Unit,
     onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit
@@ -316,7 +321,30 @@ fun TestControlCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "NUMERO DI CAMPIONI PER IL TEST",
+                text = "MODALITÀ DI BENCHMARK",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            // Selettore Modalità (AT-Only vs ECU)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                BenchmarkMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = selectedBenchmarkMode == mode,
+                        onClick = { if (!isTesting) onSelectBenchmarkMode(mode) },
+                        label = { Text(mode.label, fontSize = 11.sp) },
+                        enabled = !isTesting,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            Text(
+                text = "NUMERO DI CAMPIONI",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
@@ -331,7 +359,7 @@ fun TestControlCard(
                     FilterChip(
                         selected = selectedRequestCount == count,
                         onClick = { if (!isTesting) onSelectRequestCount(count) },
-                        label = { Text("$count comandi") },
+                        label = { Text("$count campioni") },
                         enabled = !isTesting,
                         modifier = Modifier.weight(1f)
                     )
@@ -422,12 +450,19 @@ fun CurrentMetricsCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "RISULTATI METROLOGICI: ${metrics.deviceName}",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                Column {
+                    Text(
+                        text = "RISULTATI: ${metrics.deviceName}",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "Modalità: ${metrics.benchmarkMode.label}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    )
+                }
 
                 Text(
                     text = metrics.elmVersion,
@@ -452,14 +487,14 @@ fun CurrentMetricsCard(
 
                 MetricItem(
                     label = "VELOCITÀ COMANDI",
-                    value = "${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} PID/s",
-                    subValue = "Riuscite: ${metrics.successfulResponses}/${metrics.totalCommandsSent} (Err: ${metrics.timeoutCount})"
+                    value = "${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} Cmd/s",
+                    subValue = "SUCCESS: ${metrics.successCount}/${metrics.totalCommandsSent}"
                 )
             }
 
             HorizontalDivider()
 
-            // Seconda riga: Percentili P50, P95, P99 e Deviazione Standard
+            // Seconda riga: Percentili P50, P95, P99, Dev. Std e Jitter
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceAround
@@ -480,17 +515,48 @@ fun CurrentMetricsCard(
                     label = "DEV. STD (σ)",
                     value = "${String.format(Locale.US, "%.1f", metrics.stdDevMs)} ms"
                 )
+                MetricItemSmall(
+                    label = "JITTER",
+                    value = "${String.format(Locale.US, "%.1f", metrics.jitterMs)} ms"
+                )
             }
 
-            // Intervallo inter-richiesta effettivo
+            HorizontalDivider()
+
+            // Dettaglio Classificazione Risposte
             Text(
-                text = "Intervallo Effettivo Inter-Richiesta: ${String.format(Locale.US, "%.2f", metrics.avgInterRequestIntervalMs)} ms",
+                text = "CLASSIFICAZIONE RISPOSTE:",
                 fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "OK (SUCCESS): ${metrics.successCount}",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF2E7D32)
+                )
+                Text(
+                    text = "ECU ERR: ${metrics.ecuErrorCount}",
+                    fontSize = 11.sp,
+                    color = if (metrics.ecuErrorCount > 0) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = "ADAPTER ERR: ${metrics.adapterErrorCount}",
+                    fontSize = 11.sp,
+                    color = if (metrics.adapterErrorCount > 0) Color(0xFFE65100) else MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = "TIMEOUT: ${metrics.timeoutCount}",
+                    fontSize = 11.sp,
+                    color = if (metrics.timeoutCount > 0) Color(0xFFC62828) else MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
 
             if (status is BenchmarkStatus.Completed) {
                 Row(

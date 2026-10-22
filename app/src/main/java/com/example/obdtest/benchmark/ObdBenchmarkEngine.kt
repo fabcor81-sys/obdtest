@@ -13,8 +13,10 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.example.obdtest.ui.BenchmarkMetrics
+import com.example.obdtest.ui.BenchmarkMode
 import com.example.obdtest.ui.BenchmarkStatus
 import com.example.obdtest.ui.CommandTimingSample
+import com.example.obdtest.ui.SampleStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -111,6 +113,7 @@ class ObdBenchmarkEngine {
         context: Context,
         device: BluetoothDevice,
         isBle: Boolean = false,
+        benchmarkMode: BenchmarkMode = BenchmarkMode.AT_ONLY,
         targetRequestCount: Int = 100,
         onStatusUpdate: (BenchmarkStatus, String) -> Unit,
         onMetricsUpdate: (BenchmarkMetrics) -> Unit
@@ -121,6 +124,7 @@ class ObdBenchmarkEngine {
         var metrics = BenchmarkMetrics(
             deviceName = device.name ?: device.address,
             deviceAddress = device.address,
+            benchmarkMode = benchmarkMode,
             targetRequestCount = targetRequestCount
         )
 
@@ -136,42 +140,87 @@ class ObdBenchmarkEngine {
             }
             log("Connessione $transportTypeStr stabilita con successo!")
 
-            onStatusUpdate(BenchmarkStatus.Initializing, "Inizializzazione adattatore OBD2 (AT commands)...")
-            log("Inizio sequenza di inizializzazione ELM327...")
+            onStatusUpdate(BenchmarkStatus.Initializing, "Inizializzazione automatica adattatore (${benchmarkMode.label})...")
 
-            // Inizializzazione ELM327 / STN / vLinker
-            executeRawCommand("AT Z\r", timeoutMs = 3000L)
-            kotlinx.coroutines.delay(600)
-            clearBuffer()
+            val initLogEntries = mutableListOf<String>()
 
-            executeRawCommand("ATE0\r") // Echo Off
-            executeRawCommand("ATL0\r") // Linefeeds Off
-            executeRawCommand("ATH0\r") // Headers Off
-            executeRawCommand("AT M0\r") // Memory Off
+            fun sendInitCmd(cmd: String, timeout: Long = DEFAULT_TIMEOUT_MS): String {
+                val resp = executeRawCommand(cmd, timeout)
+                val clean = cleanResponse(resp, cmd)
+                val entry = "CMD: ${cmd.trim()} -> RESP: ${if (clean.isBlank()) "OK/NO_RESP" else clean}"
+                initLogEntries.add(entry)
+                log("[INIT] $entry")
+                return resp
+            }
 
-            val atiResponse = executeRawCommand("ATI\r")
-            val elmVersion = if (atiResponse.isNotEmpty()) atiResponse else "ELM327 v1.5 (generico)"
-            log("Versione Adattatore Rilevata: $elmVersion")
+            val elmVersion: String
+            val protocol: String
+            val targetCommand: String
 
-            val atdpResponse = executeRawCommand("AT DP\r")
-            val protocol = if (atdpResponse.isNotEmpty()) atdpResponse else "Auto OBD2"
-            log("Protocollo OBD2 Rilevato: $protocol")
+            if (benchmarkMode == BenchmarkMode.AT_ONLY) {
+                log("Configurazione automatica modalità AT-Only...")
+                sendInitCmd("ATE0\r")
+                sendInitCmd("ATL0\r")
+                sendInitCmd("ATH0\r")
+
+                val atiResp = sendInitCmd("ATI\r")
+                elmVersion = if (atiResp.isNotBlank()) atiResp else "ELM327 / Adattatore AT"
+                protocol = "N/D (AT-Only)"
+                targetCommand = BenchmarkMode.AT_ONLY.command
+                log("Versione Adattatore Rilevata: $elmVersion")
+            } else {
+                log("Inizio sequenza automatica di inizializzazione ECU / OBD2...")
+
+                val atzResp = sendInitCmd("AT Z\r", 3000L)
+                kotlinx.coroutines.delay(600)
+                clearBuffer()
+
+                elmVersion = if (atzResp.isNotBlank()) atzResp else "ELM327 v1.5"
+
+                log("Tentativo 1: Aggancio automatico KWP2000 Fast Init (ISO 14230-4 / Header 812BF1 / Keep-Alive 812BF13E)...")
+                sendInitCmd("AT L1\r")
+                sendInitCmd("ATE0\r")
+                sendInitCmd("ATH0\r")
+                sendInitCmd("AT SP 5\r") // ISO 14230-4 KWP Fast Init
+                sendInitCmd("AT SH 812BF1\r") // Header Custom FCA/Fiat/Bosch
+                sendInitCmd("AT WM 812BF13E\r") // Keep-Alive KWP2000 TesterPresent
+
+                val kwpProbeResp = sendInitCmd("0100\r", 3500L)
+                val cleanKwpProbe = cleanResponse(kwpProbeResp, "0100")
+                val kwpSuccess = cleanKwpProbe.contains("41") || cleanKwpProbe.contains("4100") || cleanKwpProbe.contains("41 00")
+
+                if (kwpSuccess) {
+                    protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
+                    log("Aggancio ECU KWP2000 completato con successo!")
+                } else {
+                    log("KWP2000 Custom non ha risposto o non presente. Tentativo 2: Fallback su Auto Protocol OBD2 (AT SP 0)...")
+                    sendInitCmd("AT SP 0\r") // Auto Protocol
+                    sendInitCmd("AT SH 7DF\r") // Reset Header Standard Broadcast
+                    sendInitCmd("0100\r", 4000L)
+                    val atdpResp = sendInitCmd("AT DP\r")
+                    protocol = if (atdpResp.isNotBlank()) atdpResp else "Auto OBD2"
+                    log("Protocollo OBD2 Rilevato: $protocol")
+                }
+
+                targetCommand = BenchmarkMode.OBD_PID.command
+            }
 
             metrics = metrics.copy(
                 elmVersion = elmVersion,
-                protocolName = protocol
+                protocolName = protocol,
+                initLog = initLogEntries
             )
             onMetricsUpdate(metrics)
 
             if (!isRunning) throw InterruptedException("Test interrotto dall'utente")
 
             // =========================================================
-            // BENCHMARK METROLOGICO AD ALTA PRECISIONE (t0, t1, t2, t3)
+            // BENCHMARK METROLOGICO AD ALTA PRECISIONE
             // =========================================================
-            log("=== INIZIO BENCHMARK METROLOGICO ($targetRequestCount richieste) ===")
+            log("=== INIZIO BENCHMARK METROLOGICO [${benchmarkMode.label}] ($targetRequestCount richieste) ===")
             onStatusUpdate(
                 BenchmarkStatus.RunningTest(0, targetRequestCount, 0.0, 0.0),
-                "Avvio benchmark metrologico ($targetRequestCount richieste)..."
+                "Avvio benchmark (${benchmarkMode.label})..."
             )
 
             val samples = mutableListOf<CommandTimingSample>()
@@ -185,7 +234,8 @@ class ObdBenchmarkEngine {
 
                 val sample = executeCommandTimed(
                     sampleIndex = i,
-                    command = "0100\r",
+                    mode = benchmarkMode,
+                    command = targetCommand,
                     previousT0Nanos = lastT0Nanos,
                     timeoutMs = DEFAULT_TIMEOUT_MS
                 )
@@ -219,7 +269,7 @@ class ObdBenchmarkEngine {
                             currentPidsPerSec = currentPidsPerSec,
                             lastLatencyMs = sample.totalRoundTripMs
                         ),
-                        "Progresso: $i/$targetRequestCount richieste (${String.format(Locale.US, "%.1f", currentPidsPerSec)} PID/s - Latenza: ${String.format(Locale.US, "%.1f", sample.totalRoundTripMs)} ms)"
+                        "Progresso: $i/$targetRequestCount [SUCCESS: ${metrics.successCount}, ERR: ${metrics.ecuErrorCount + metrics.adapterErrorCount + metrics.timeoutCount}] (${String.format(Locale.US, "%.1f", currentPidsPerSec)} cmd/s - Latenza: ${String.format(Locale.US, "%.1f", sample.totalRoundTripMs)} ms)"
                     )
                 }
             }
@@ -233,23 +283,26 @@ class ObdBenchmarkEngine {
             )
 
             log("=== BENCHMARK COMPLETATO ===")
-            log("Risultati per ${metrics.deviceName}:")
+            log("Risultati per ${metrics.deviceName} (${benchmarkMode.label}):")
             log(" - Tipo Connessione: $transportTypeStr")
             log(" - Firmware: ${metrics.elmVersion}")
-            log(" - Campioni Richiesti: $targetRequestCount (Completati: ${samples.size})")
+            log(" - Campioni: Richiesti: $targetRequestCount | SUCCESS: ${metrics.successCount} | ECU_ERR: ${metrics.ecuErrorCount} | ADAPTER_ERR: ${metrics.adapterErrorCount} | TIMEOUT: ${metrics.timeoutCount} | INCOMPLETE: ${metrics.incompleteCount}")
             log(" - Latenza Min: ${String.format(Locale.US, "%.2f", metrics.minLatencyMs)} ms | Media: ${String.format(Locale.US, "%.2f", metrics.avgLatencyMs)} ms | Max: ${String.format(Locale.US, "%.2f", metrics.maxLatencyMs)} ms")
             log(" - Percentili: P50: ${String.format(Locale.US, "%.2f", metrics.p50Ms)} ms | P95: ${String.format(Locale.US, "%.2f", metrics.p95Ms)} ms | P99: ${String.format(Locale.US, "%.2f", metrics.p99Ms)} ms")
-            log(" - Deviazione Standard: ${String.format(Locale.US, "%.2f", metrics.stdDevMs)} ms")
-            log(" - Intervallo Inter-Richiesta Medio: ${String.format(Locale.US, "%.2f", metrics.avgInterRequestIntervalMs)} ms")
-            log(" - Velocità Comandi: ${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} PID/s")
-            log(" - Timeout/Errori: ${metrics.timeoutCount}")
+            log(" - Stabilità: StdDev: ${String.format(Locale.US, "%.2f", metrics.stdDevMs)} ms | Jitter: ${String.format(Locale.US, "%.2f", metrics.jitterMs)} ms")
+            log(" - Velocità Comandi: ${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} Cmd/s")
 
             onMetricsUpdate(metrics)
             onStatusUpdate(BenchmarkStatus.Completed, "Benchmark metrologico completato!")
 
             metrics
         } catch (e: Exception) {
-            log("ERRORE durante il benchmark: ${e.message}", isError = true)
+            val errLog = "ERRORE APPLICATIVO CRITICO: ${e.javaClass.simpleName} - ${e.message}\n${Log.getStackTraceString(e)}"
+            log(errLog, isError = true)
+
+            metrics = metrics.copy(sessionLogs = _logs.value)
+            onMetricsUpdate(metrics)
+
             onStatusUpdate(BenchmarkStatus.Error(e.message ?: "Errore di comunicazione"), "Errore: ${e.message}")
             throw e
         } finally {
@@ -257,22 +310,98 @@ class ObdBenchmarkEngine {
         }
     }
 
+    private fun classifyResponse(
+        mode: BenchmarkMode,
+        commandSent: String,
+        rawResponse: String,
+        hasPrompt: Boolean,
+        bytesReceived: Int
+    ): SampleStatus {
+        if (!hasPrompt) {
+            return if (bytesReceived == 0 || rawResponse.isBlank()) {
+                SampleStatus.TIMEOUT
+            } else {
+                SampleStatus.INCOMPLETE_RESPONSE
+            }
+        }
+
+        val upper = rawResponse.uppercase(Locale.US).trim()
+
+        // 1. Errore o stato di interruzione dell'adattatore
+        if (upper.contains("STOPPED") ||
+            upper.contains("SEARCHING...") ||
+            upper.contains("BUFFER FULL") ||
+            upper == "?" ||
+            upper.contains("FB ERROR") ||
+            upper.contains("ACT ERROR") ||
+            upper.contains("DATA ERROR") ||
+            upper.contains("ERR70")
+        ) {
+            return SampleStatus.ADAPTER_ERROR
+        }
+
+        // 2. Errore riscontrato sul bus ECU / veicolo
+        if (upper.contains("BUS INIT: ERROR") ||
+            upper.contains("BUS INIT ERROR") ||
+            upper.contains("NO DATA") ||
+            upper.contains("UNABLE TO CONNECT") ||
+            upper.contains("BUS ERROR") ||
+            upper.contains("BUS BUSY") ||
+            upper.contains("CAN ERROR")
+        ) {
+            return SampleStatus.ECU_ERROR
+        }
+
+        // 3. Valutazione in base alla modalità di benchmark
+        return when (mode) {
+            BenchmarkMode.AT_ONLY -> {
+                val cleaned = cleanResponse(rawResponse, commandSent)
+                if (cleaned.isNotBlank()) {
+                    SampleStatus.SUCCESS
+                } else {
+                    SampleStatus.ADAPTER_ERROR
+                }
+            }
+
+            BenchmarkMode.OBD_PID -> {
+                val cleaned = cleanResponse(rawResponse, commandSent).replace(" ", "")
+                val cmdClean = commandSent.trim().replace("\r", "").replace(" ", "").uppercase(Locale.US)
+                if (cmdClean.startsWith("01")) {
+                    val expectedMode = "41" + cmdClean.substring(2) // es. 0100 -> 4100
+                    if (cleaned.contains(expectedMode) || cleaned.startsWith("41")) {
+                        SampleStatus.SUCCESS
+                    } else {
+                        SampleStatus.ECU_ERROR
+                    }
+                } else {
+                    if (cleaned.isNotBlank()) {
+                        SampleStatus.SUCCESS
+                    } else {
+                        SampleStatus.ECU_ERROR
+                    }
+                }
+            }
+        }
+    }
+
     private fun executeCommandTimed(
         sampleIndex: Int,
+        mode: BenchmarkMode,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
     ): CommandTimingSample {
         return if (isBleMode) {
-            executeCommandTimedBle(sampleIndex, command, previousT0Nanos, timeoutMs)
+            executeCommandTimedBle(sampleIndex, mode, command, previousT0Nanos, timeoutMs)
         } else {
-            executeCommandTimedClassic(sampleIndex, command, previousT0Nanos, timeoutMs)
+            executeCommandTimedClassic(sampleIndex, mode, command, previousT0Nanos, timeoutMs)
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun executeCommandTimedBle(
         sampleIndex: Int,
+        mode: BenchmarkMode,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
@@ -334,14 +463,29 @@ class ObdBenchmarkEngine {
             Thread.sleep(2)
         }
 
-        if (t3Nanos == 0L) {
+        val hasPrompt = t3Nanos > 0L
+        if (!hasPrompt) {
             t3Nanos = SystemClock.elapsedRealtimeNanos()
             synchronized(bleLock) {
                 rawResponse = bleResponseBuffer.toString()
             }
         }
 
-        val isSuccess = rawResponse.contains(">")
+        val status = classifyResponse(
+            mode = mode,
+            commandSent = command,
+            rawResponse = rawResponse,
+            hasPrompt = hasPrompt,
+            bytesReceived = rawResponse.length
+        )
+
+        // Risincronizzazione dello stream in caso di timeout o mancato prompt per pulire il buffer
+        if (status == SampleStatus.TIMEOUT || status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
+            resyncStreamBle()
+        }
+
+        val isSuccess = (status == SampleStatus.SUCCESS)
+        val isTimeout = (status == SampleStatus.TIMEOUT)
 
         val writeDurationMs = (t1Nanos - t0Nanos) / 1_000_000.0
         val timeToFirstByteMs = if (t2Nanos > 0) (t2Nanos - t1Nanos) / 1_000_000.0 else 0.0
@@ -360,8 +504,9 @@ class ObdBenchmarkEngine {
             rxDurationMs = rxDurationMs,
             totalRoundTripMs = totalRoundTripMs,
             interRequestIntervalMs = interRequestIntervalMs,
+            status = status,
             isSuccess = isSuccess,
-            isTimeout = !isSuccess,
+            isTimeout = isTimeout,
             commandSent = command.trim(),
             rawResponse = cleanResponse(rawResponse, command)
         )
@@ -369,6 +514,7 @@ class ObdBenchmarkEngine {
 
     private fun executeCommandTimedClassic(
         sampleIndex: Int,
+        mode: BenchmarkMode,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
@@ -389,6 +535,7 @@ class ObdBenchmarkEngine {
 
         var t2Nanos = 0L
         var t3Nanos = 0L
+        var totalBytesRead = 0
 
         val responseBuilder = StringBuilder()
         val buffer = ByteArray(READ_BUFFER_SIZE)
@@ -404,6 +551,7 @@ class ObdBenchmarkEngine {
                         if (t2Nanos == 0L) {
                             t2Nanos = nowNanos
                         }
+                        totalBytesRead += bytesRead
 
                         val text = String(buffer, 0, bytesRead, Charsets.US_ASCII)
                         responseBuilder.append(text)
@@ -416,17 +564,32 @@ class ObdBenchmarkEngine {
                 }
             } catch (_: SocketTimeoutException) {
             } catch (e: Exception) {
-                log("Errore di lettura stream: ${e.message}")
+                log("Errore di lettura stream Classic: ${e.message}")
                 break
             }
         }
 
-        if (t3Nanos == 0L) {
+        val hasPrompt = t3Nanos > 0L
+        if (!hasPrompt) {
             t3Nanos = SystemClock.elapsedRealtimeNanos()
         }
 
         val rawResponse = responseBuilder.toString()
-        val isSuccess = rawResponse.contains(">")
+        val status = classifyResponse(
+            mode = mode,
+            commandSent = command,
+            rawResponse = rawResponse,
+            hasPrompt = hasPrompt,
+            bytesReceived = totalBytesRead
+        )
+
+        // Risincronizzazione dello stream in caso di timeout o mancato prompt per svuotare residui
+        if (status == SampleStatus.TIMEOUT || status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
+            resyncStreamClassic()
+        }
+
+        val isSuccess = (status == SampleStatus.SUCCESS)
+        val isTimeout = (status == SampleStatus.TIMEOUT)
 
         val writeDurationMs = (t1Nanos - t0Nanos) / 1_000_000.0
         val timeToFirstByteMs = if (t2Nanos > 0) (t2Nanos - t1Nanos) / 1_000_000.0 else 0.0
@@ -445,11 +608,59 @@ class ObdBenchmarkEngine {
             rxDurationMs = rxDurationMs,
             totalRoundTripMs = totalRoundTripMs,
             interRequestIntervalMs = interRequestIntervalMs,
+            status = status,
             isSuccess = isSuccess,
-            isTimeout = !isSuccess,
+            isTimeout = isTimeout,
             commandSent = command.trim(),
             rawResponse = cleanResponse(rawResponse, command)
         )
+    }
+
+    private fun resyncStreamClassic() {
+        val out = outputStream ?: return
+        val input = inputStream ?: return
+        try {
+            out.write("\r".toByteArray(Charsets.US_ASCII))
+            out.flush()
+
+            val startNanos = SystemClock.elapsedRealtimeNanos()
+            val buffer = ByteArray(READ_BUFFER_SIZE)
+            while (isRunning && (SystemClock.elapsedRealtimeNanos() - startNanos) < 150_000_000L) {
+                if (input.available() > 0) {
+                    input.read(buffer)
+                } else {
+                    Thread.sleep(10)
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun resyncStreamBle() {
+        val gatt = bluetoothGatt ?: return
+        val rxChar = rxCharacteristic ?: return
+        try {
+            val commandBytes = "\r".toByteArray(Charsets.US_ASCII)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(rxChar, commandBytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            } else {
+                @Suppress("DEPRECATION")
+                rxChar.value = commandBytes
+                @Suppress("DEPRECATION")
+                rxChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(rxChar)
+            }
+
+            Thread.sleep(150)
+            synchronized(bleLock) {
+                bleResponseBuffer.clear()
+                bleFirstByteTimestampNanos = 0L
+                blePromptTimestampNanos = 0L
+            }
+        } catch (_: Exception) {
+        }
     }
 
     private fun createFailedSample(
@@ -470,6 +681,7 @@ class ObdBenchmarkEngine {
             rxDurationMs = 0.0,
             totalRoundTripMs = 0.0,
             interRequestIntervalMs = interval,
+            status = SampleStatus.TIMEOUT,
             isSuccess = false,
             isTimeout = true,
             commandSent = command.trim(),
@@ -485,10 +697,13 @@ class ObdBenchmarkEngine {
     ): BenchmarkMetrics {
         if (samples.isEmpty()) return baseMetrics
 
-        val successfulSamples = samples.filter { it.isSuccess }
-        val successfulCount = successfulSamples.size
-        val timeoutCount = samples.count { it.isTimeout }
+        val successCount = samples.count { it.status == SampleStatus.SUCCESS }
+        val ecuErrorCount = samples.count { it.status == SampleStatus.ECU_ERROR }
+        val adapterErrorCount = samples.count { it.status == SampleStatus.ADAPTER_ERROR }
+        val timeoutCount = samples.count { it.status == SampleStatus.TIMEOUT }
+        val incompleteCount = samples.count { it.status == SampleStatus.INCOMPLETE_RESPONSE }
 
+        val successfulSamples = samples.filter { it.status == SampleStatus.SUCCESS }
         val latencies = successfulSamples.map { it.totalRoundTripMs }
         val minLatency = latencies.minOrNull() ?: 0.0
         val maxLatency = latencies.maxOrNull() ?: 0.0
@@ -505,17 +720,28 @@ class ObdBenchmarkEngine {
             sqrt(sumOfSquaredDiffs / latencies.size)
         } else 0.0
 
+        val jitter = if (latencies.size > 1) {
+            var diffSum = 0.0
+            for (i in 0 until latencies.size - 1) {
+                diffSum += kotlin.math.abs(latencies[i + 1] - latencies[i])
+            }
+            diffSum / (latencies.size - 1)
+        } else 0.0
+
         val intervals = samples.drop(1).map { it.interRequestIntervalMs }.filter { it > 0 }
         val avgInterval = if (intervals.isNotEmpty()) intervals.average() else 0.0
 
         val totalSec = (totalDurationMs / 1000.0).coerceAtLeast(0.1)
-        val pidsPerSec = successfulCount / totalSec
+        val pidsPerSec = successCount / totalSec
         val bytesPerSec = totalBytesReceived / totalSec
 
         return baseMetrics.copy(
             totalCommandsSent = samples.size,
-            successfulResponses = successfulCount,
+            successCount = successCount,
+            ecuErrorCount = ecuErrorCount,
+            adapterErrorCount = adapterErrorCount,
             timeoutCount = timeoutCount,
+            incompleteCount = incompleteCount,
             minLatencyMs = minLatency,
             avgLatencyMs = avgLatency,
             maxLatencyMs = maxLatency,
@@ -523,10 +749,12 @@ class ObdBenchmarkEngine {
             p95Ms = p95,
             p99Ms = p99,
             stdDevMs = stdDev,
+            jitterMs = jitter,
             avgInterRequestIntervalMs = avgInterval,
             commandsPerSecond = pidsPerSec,
             bytesPerSecond = bytesPerSec,
             testDurationMs = totalDurationMs,
+            sessionLogs = _logs.value,
             rawSamples = samples
         )
     }
@@ -918,12 +1146,16 @@ class ObdBenchmarkEngine {
             writer.println("# Data Generazione,${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
             writer.println("# Dispositivo,${metrics.deviceName}")
             writer.println("# Indirizzo MAC,${metrics.deviceAddress}")
+            writer.println("# Modalità Benchmark,${metrics.benchmarkMode.label}")
             writer.println("# Firmware ELM,${metrics.elmVersion}")
             writer.println("# Protocollo OBD,${metrics.protocolName}")
             writer.println("# Campioni Target,${metrics.targetRequestCount}")
             writer.println("# Campioni Effettivi,${metrics.totalCommandsSent}")
-            writer.println("# Risposte Riuscite,${metrics.successfulResponses}")
-            writer.println("# Timeout / Errori,${metrics.timeoutCount}")
+            writer.println("# Risposte SUCCESS,${metrics.successCount}")
+            writer.println("# Errori ECU (ECU_ERROR),${metrics.ecuErrorCount}")
+            writer.println("# Errori Adattatore (ADAPTER_ERROR),${metrics.adapterErrorCount}")
+            writer.println("# Timeout (TIMEOUT),${metrics.timeoutCount}")
+            writer.println("# Risposte Incomplete (INCOMPLETE_RESPONSE),${metrics.incompleteCount}")
             writer.println("# Latenza Min (ms),${String.format(Locale.US, "%.3f", metrics.minLatencyMs)}")
             writer.println("# Latenza Media (ms),${String.format(Locale.US, "%.3f", metrics.avgLatencyMs)}")
             writer.println("# Latenza Max (ms),${String.format(Locale.US, "%.3f", metrics.maxLatencyMs)}")
@@ -931,15 +1163,36 @@ class ObdBenchmarkEngine {
             writer.println("# Percentile P95 (ms),${String.format(Locale.US, "%.3f", metrics.p95Ms)}")
             writer.println("# Percentile P99 (ms),${String.format(Locale.US, "%.3f", metrics.p99Ms)}")
             writer.println("# Deviazione Standard (ms),${String.format(Locale.US, "%.3f", metrics.stdDevMs)}")
+            writer.println("# Jitter (ms),${String.format(Locale.US, "%.3f", metrics.jitterMs)}")
             writer.println("# Intervallo Medio Inter-Richiesta (ms),${String.format(Locale.US, "%.3f", metrics.avgInterRequestIntervalMs)}")
             writer.println("# Velocità (PID/s),${String.format(Locale.US, "%.2f", metrics.commandsPerSecond)}")
             writer.println("# Throughput (B/s),${String.format(Locale.US, "%.2f", metrics.bytesPerSecond)}")
             writer.println("# Durata Totale Test (ms),${metrics.testDurationMs}")
             writer.println("#")
+            writer.println("# --- INIZIALIZZAZIONE AUTOMATICA SCRIPT ---")
+            if (metrics.initLog.isNotEmpty()) {
+                metrics.initLog.forEachIndexed { idx, entry ->
+                    val cleanEntry = entry.replace(",", ";")
+                    writer.println("# InitStep_${String.format(Locale.US, "%02d", idx + 1)},$cleanEntry")
+                }
+            } else {
+                writer.println("# InitStep_01,Nessun log di inizializzazione registrato")
+            }
+            writer.println("#")
+            writer.println("# --- LOG APPLICATIVI DI SESSIONE ---")
+            val currentLogs = if (metrics.sessionLogs.isNotEmpty()) metrics.sessionLogs else _logs.value
+            if (currentLogs.isNotEmpty()) {
+                currentLogs.forEachIndexed { idx, logLine ->
+                    val cleanLog = logLine.replace(",", ";").replace("\n", " ")
+                    writer.println("# SessionLog_${String.format(Locale.US, "%03d", idx + 1)},$cleanLog")
+                }
+            } else {
+                writer.println("# SessionLog_001,Nessun log applicativo registrato")
+            }
+            writer.println("#")
             writer.println("Sample_Index,t0_elapsed_ns,t1_elapsed_ns,t2_elapsed_ns,t3_elapsed_ns,Write_ms,TTFB_ms,RX_ms,Total_RTT_ms,InterRequest_Interval_ms,Status,Command,Response")
 
             metrics.rawSamples.forEach { sample ->
-                val statusStr = if (sample.isSuccess) "OK" else "TIMEOUT"
                 val cleanResp = sample.rawResponse.replace(",", ";")
                 writer.println(
                     "${sample.sampleIndex}," +
@@ -952,7 +1205,7 @@ class ObdBenchmarkEngine {
                             "${String.format(Locale.US, "%.3f", sample.rxDurationMs)}," +
                             "${String.format(Locale.US, "%.3f", sample.totalRoundTripMs)}," +
                             "${String.format(Locale.US, "%.3f", sample.interRequestIntervalMs)}," +
-                            "$statusStr," +
+                            "${sample.status.name}," +
                             "${sample.commandSent}," +
                             "\"$cleanResp\""
                 )

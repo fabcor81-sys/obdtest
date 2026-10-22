@@ -111,6 +111,9 @@ class MainActivity : ComponentActivity() {
                         onSelectDevice = { device ->
                             uiState = uiState.copy(selectedDevice = device)
                         },
+                        onSelectBenchmarkMode = { mode ->
+                            uiState = uiState.copy(selectedBenchmarkMode = mode)
+                        },
                         onSelectRequestCount = { count ->
                             uiState = uiState.copy(selectedRequestCount = count)
                         },
@@ -133,7 +136,7 @@ class MainActivity : ComponentActivity() {
                             benchmarkEngine.clearLogs()
                             uiState = uiState.copy(
                                 status = BenchmarkStatus.Connecting,
-                                statusMessage = "Inizio benchmark metrologico (${uiState.selectedRequestCount} richieste)..."
+                                statusMessage = "Inizio benchmark metrologico [${uiState.selectedBenchmarkMode.label}] (${uiState.selectedRequestCount} richieste)..."
                             )
 
                             benchmarkJob?.cancel()
@@ -143,6 +146,7 @@ class MainActivity : ComponentActivity() {
                                         context = this@MainActivity,
                                         device = bluetoothDevice,
                                         isBle = selectedDeviceItem.isBle,
+                                        benchmarkMode = uiState.selectedBenchmarkMode,
                                         targetRequestCount = uiState.selectedRequestCount,
                                         onStatusUpdate = { status, msg ->
                                             uiState = uiState.copy(
@@ -177,9 +181,19 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 } catch (e: Exception) {
+                                    // Se si verifica un errore durante il test, genera comunque il CSV parziale con i log e i campioni raccolti
+                                    var errCsvPath: String? = null
+                                    uiState.currentMetrics?.let { partialMetrics ->
+                                        try {
+                                            val errCsvFile = benchmarkEngine.exportMetricsToCsv(this@MainActivity, partialMetrics)
+                                            errCsvPath = errCsvFile.absolutePath
+                                        } catch (_: Exception) {}
+                                    }
+
                                     uiState = uiState.copy(
                                         status = BenchmarkStatus.Error(e.message ?: "Errore"),
-                                        statusMessage = "Errore: ${e.message}"
+                                        statusMessage = "Errore: ${e.message}",
+                                        exportedCsvPath = errCsvPath ?: uiState.exportedCsvPath
                                     )
                                 }
                             }
