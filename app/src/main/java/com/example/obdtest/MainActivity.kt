@@ -76,12 +76,6 @@ class MainActivity : ComponentActivity() {
                         onSelectProfile = { profile ->
                             viewModel.selectObdProfile(profile)
                         },
-                        onCustomCommandChange = { cmd ->
-                            viewModel.setCustomCommand(cmd)
-                        },
-                        onSelectRequestCount = { count ->
-                            viewModel.selectRequestCount(count)
-                        },
                         onStartTest = {
                             viewModel.startBenchmarkTest()
                         },

@@ -44,8 +44,6 @@ fun ObdBenchmarkScreen(
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
-    onCustomCommandChange: (String) -> Unit,
-    onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
     onSaveComparison: () -> Unit,
@@ -116,19 +114,15 @@ fun ObdBenchmarkScreen(
                             uiState.status !is BenchmarkStatus.Error
                 )
 
-                // 2. Controlli Trasporto, Profilo e Numero Campioni
+                // 2. Controlli Trasporto e Profilo (Automatico in un solo tocco)
                 TestControlCard(
                     status = uiState.status,
                     statusMessage = uiState.statusMessage,
                     selectedTransportMode = uiState.selectedTransportMode,
                     selectedProfile = uiState.selectedProfile,
-                    customCommand = uiState.customCommand,
-                    selectedRequestCount = uiState.selectedRequestCount,
                     isDeviceSelected = uiState.selectedDevice != null,
                     onSelectTransportMode = onSelectTransportMode,
                     onSelectProfile = onSelectProfile,
-                    onCustomCommandChange = onCustomCommandChange,
-                    onSelectRequestCount = onSelectRequestCount,
                     onStartTest = onStartTest,
                     onStopTest = onStopTest
                 )
@@ -394,13 +388,9 @@ fun TestControlCard(
     statusMessage: String,
     selectedTransportMode: TransportMode,
     selectedProfile: ObdProfile,
-    customCommand: String,
-    selectedRequestCount: Int,
     isDeviceSelected: Boolean,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
-    onCustomCommandChange: (String) -> Unit,
-    onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit
 ) {
@@ -470,62 +460,19 @@ fun TestControlCard(
 
             if (selectedProfile == ObdProfile.LOTUS_ABS) {
                 Text(
-                    text = "⚠️ Profilo Lotus ABS: Sequenza ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5. Verificare il supporto per il comando '0100' o personalizzare sotto.",
+                    text = "⚙️ Inizializzazione Automatica Lotus ABS:\nATZ ➔ AT L1 ➔ AT SH 812BF1 ➔ AT WM 812BF13E ➔ AT SP 5 (100 campioni)",
                     fontSize = 10.sp,
-                    color = RacingYellow
+                    fontWeight = FontWeight.SemiBold,
+                    color = RacingYellow,
+                    modifier = Modifier.padding(vertical = 2.dp)
                 )
-            }
-
-            if (selectedProfile != ObdProfile.AT_ONLY) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "Comando Misurato:",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = RacingText
-                    )
-                    OutlinedTextField(
-                        value = customCommand,
-                        onValueChange = onCustomCommandChange,
-                        singleLine = true,
-                        enabled = !isTesting,
-                        textStyle = LocalTextStyle.current.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = RacingYellow
-                        ),
-                        modifier = Modifier.width(120.dp)
-                    )
-                }
-            }
-
-            Text(
-                text = "NUMERO DI CAMPIONI",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = RacingYellow
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                listOf(100, 500, 1000).forEach { count ->
-                    FilterChip(
-                        selected = selectedRequestCount == count,
-                        onClick = { if (!isTesting) onSelectRequestCount(count) },
-                        label = { Text("$count campioni", fontSize = 11.sp, color = if (selectedRequestCount == count) RacingBackground else RacingText) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = RacingYellow,
-                            containerColor = RacingSurfaceSecondary
-                        ),
-                        enabled = !isTesting,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+            } else if (selectedProfile == ObdProfile.GENERIC_AUTO) {
+                Text(
+                    text = "⚙️ Inizializzazione Automatica OBD Standard (AT SP 0 / 100 campioni)",
+                    fontSize = 10.sp,
+                    color = RacingTextSecondary,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                )
             }
 
             HorizontalDivider(color = RacingSurfaceSecondary)
@@ -562,6 +509,7 @@ fun TestControlCard(
                 )
             }
 
+            // UNICO GRANDE PULSANTE D'AZIONE
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -573,11 +521,13 @@ fun TestControlCard(
                             containerColor = RacingError,
                             contentColor = RacingText
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
                     ) {
                         Icon(Icons.Default.Stop, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("ARRESTA BENCHMARK (STOP EMERGENCY)", fontWeight = FontWeight.Bold)
+                        Text("ARRESTA BENCHMARK (STOP)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 } else {
                     Button(
@@ -589,11 +539,13 @@ fun TestControlCard(
                             disabledContainerColor = RacingSurfaceSecondary,
                             disabledContentColor = RacingTextSecondary
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
                     ) {
                         Icon(Icons.Default.Speed, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("AVVIA BENCHMARK ($selectedRequestCount RICHIESTE)", fontWeight = FontWeight.Bold)
+                        Text("AVVIA BENCHMARK (100 CAMPIONI)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 }
             }
