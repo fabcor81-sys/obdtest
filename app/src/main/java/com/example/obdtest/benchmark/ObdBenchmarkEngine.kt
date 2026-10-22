@@ -38,13 +38,6 @@ import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.math.sqrt
 
-data class RawCommandResult(
-    val rawResponse: String,
-    val cleanResponse: String,
-    val hasPrompt: Boolean,
-    val isTimeout: Boolean
-)
-
 class ObdBenchmarkEngine {
 
     companion object {
@@ -170,7 +163,7 @@ class ObdBenchmarkEngine {
         )
 
         val samples = mutableListOf<CommandTimingSample>()
-        val connectionStartMs = SystemClock.elapsedRealtime()
+        val measurementClock = MeasurementClock { SystemClock.elapsedRealtimeNanos() }
         var totalRawBytesReceived = 0L
         var totalAppBytesReceived = 0L
 
@@ -194,6 +187,7 @@ class ObdBenchmarkEngine {
                 }
             }
 
+            metrics = metrics.copy(effectiveTransport = BenchmarkPolicy.effectiveTransport(isBleMode))
             coroutineContext.ensureActive()
             log("Connessione stabilita con successo via ${if (isBleMode) "BLE GATT" else "Classic SPP"}!")
 
@@ -203,19 +197,14 @@ class ObdBenchmarkEngine {
 
             fun sendInitCmd(cmd: String, cmdTimeout: Long = timeoutMs): RawCommandResult {
                 val res = executeRawCommand(cmd, cmdTimeout)
-                val entry = "CMD: ${cmd.trim()} -> RESP: ${if (res.cleanResponse.isBlank()) "OK/NO_RESP" else res.cleanResponse}"
+                val entry = "CMD: ${cmd.trim()} -> RESP: ${if (res.cleanResponse.isBlank()) "NESSUNA RISPOSTA" else res.cleanResponse}"
                 initLogEntries.add(entry)
                 log("[INIT] $entry")
-                return res
-            }
-
-            fun verifyInitResp(cmdName: String, res: RawCommandResult): Boolean {
-                val cleanUpper = res.cleanResponse.uppercase(Locale.US)
-                val isOk = res.hasPrompt && !res.isTimeout && !cleanUpper.contains("ERROR") && !cleanUpper.contains("?")
-                if (!isOk) {
-                    log("ERRORE INIZIALIZZAZIONE [$cmdName]: risposta non valida -> '${res.cleanResponse}' (hasPrompt=${res.hasPrompt}, isTimeout=${res.isTimeout})", isError = true)
+                metrics = metrics.copy(initLog = initLogEntries.toList())
+                if (!BenchmarkPolicy.acceptsInitialization(cmd, res)) {
+                    throw IllegalStateException("Inizializzazione fallita: ${cmd.trim()} (${res.cleanResponse.ifBlank { "nessuna risposta" }})")
                 }
-                return isOk
+                return res
             }
 
             val elmVersion: String
@@ -253,24 +242,17 @@ class ObdBenchmarkEngine {
 
                 ObdProfile.LOTUS_ABS -> {
                     log("Inizializzazione ECU ABS Lotus (Sequenza inderogabile: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5)...")
-                    val atzRes = sendInitCmd("AT Z\r", 3000L)
-                    kotlinx.coroutines.delay(800)
-                    clearBuffer()
+                    var detectedVersion = ""
+                    for ((index, command) in BenchmarkPolicy.lotusCommands.withIndex()) {
+                        val result = sendInitCmd(command, if (index == 0) 3000L else timeoutMs)
 
-                    elmVersion = if (atzRes.cleanResponse.isNotBlank()) atzRes.cleanResponse else "ELM327"
-
-                    val resL1 = sendInitCmd("AT L1\r")
-                    if (!verifyInitResp("AT L1", resL1)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT L1")
-
-                    val resSH = sendInitCmd("AT SH 812BF1\r")
-                    if (!verifyInitResp("AT SH 812BF1", resSH)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SH 812BF1")
-
-                    val resWM = sendInitCmd("AT WM 812BF13E\r")
-                    if (!verifyInitResp("AT WM 812BF13E", resWM)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT WM 812BF13E")
-
-                    val resSP = sendInitCmd("AT SP 5\r")
-                    if (!verifyInitResp("AT SP 5", resSP)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SP 5")
-
+                        if (index == 0) {
+                            detectedVersion = result.cleanResponse
+                            kotlinx.coroutines.delay(800)
+                            clearBuffer()
+                        }
+                    }
+                    elmVersion = detectedVersion
                     protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
                 }
             }
@@ -292,7 +274,7 @@ class ObdBenchmarkEngine {
             var warmupSuccesses = 0
 
             for (w in 1..warmupCount) {
-                if (!isRunning) break
+                if (!isRunning) throw CancellationException("Sessione interrotta")
                 coroutineContext.ensureActive()
 
                 val warmupSample = executeCommandTimed(
@@ -314,15 +296,15 @@ class ObdBenchmarkEngine {
                 log("[WARMUP $w/$warmupCount] Status: ${warmupSample.status.name} | Latenza: ${String.format(Locale.US, "%.1f", warmupSample.totalRoundTripMs)}ms")
             }
 
-            val isWarmupSuccess = (warmupSuccesses > 0) || (obdProfile == ObdProfile.AT_ONLY)
+            val isWarmupSuccess = BenchmarkPolicy.warmupPassed(warmupCount, warmupSuccesses)
             metrics = metrics.copy(
                 warmupFirstLatencyMs = warmupFirstLatency,
                 isWarmupSuccess = isWarmupSuccess
             )
             onMetricsUpdate(metrics)
 
-            if (!isWarmupSuccess && obdProfile != ObdProfile.AT_ONLY) {
-                log("ATTENZIONE: La fase di riscaldamento ha evidenziato mancata risposta dalla ECU ABS/OBD!", isError = true)
+            if (!isWarmupSuccess) {
+                throw IllegalStateException("Riscaldamento fallito: nessuna risposta valida. Verificare collegamento e supporto del comando ${targetCommand.trim()}.")
             }
 
             coroutineContext.ensureActive()
@@ -334,12 +316,12 @@ class ObdBenchmarkEngine {
                 "Avvio misura ($targetRequestCount richieste)..."
             )
 
-            val testStartNanos = SystemClock.elapsedRealtimeNanos()
+            measurementClock.start()
             var lastT0Nanos = 0L
             var lastUiUpdateMs = SystemClock.elapsedRealtime()
 
             for (i in 1..targetRequestCount) {
-                if (!isRunning || currentSessionId != activeSessionId) break
+                if (!isRunning || currentSessionId != activeSessionId) throw CancellationException("Sessione interrotta")
                 coroutineContext.ensureActive()
 
                 val sample = executeCommandTimed(
@@ -359,12 +341,12 @@ class ObdBenchmarkEngine {
                 }
 
                 val nowMs = SystemClock.elapsedRealtime()
-                val elapsedSec = ((SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000_000.0).coerceAtLeast(0.001)
+                val elapsedSec = (measurementClock.elapsedMs() / 1000.0).coerceAtLeast(0.001)
                 val currentPidsPerSec = samples.count { it.isSuccess } / elapsedSec
 
                 if (nowMs - lastUiUpdateMs > 250 || i == targetRequestCount) {
                     lastUiUpdateMs = nowMs
-                    val currentDurationMs = (SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000L
+                    val currentDurationMs = measurementClock.elapsedMs()
                     val updatedMetrics = calculateMetrics(
                         baseMetrics = metrics,
                         samples = samples,
@@ -388,7 +370,9 @@ class ObdBenchmarkEngine {
                 }
             }
 
-            val finalMeasuredDurationMs = (SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000L
+            coroutineContext.ensureActive()
+            if (!isRunning) throw CancellationException("Sessione interrotta")
+            val finalMeasuredDurationMs = measurementClock.elapsedMs()
             metrics = calculateMetrics(
                 baseMetrics = metrics,
                 samples = samples,
@@ -416,7 +400,7 @@ class ObdBenchmarkEngine {
             metrics
         } catch (e: CancellationException) {
             log("Benchmark annullato dall'utente.", isError = false)
-            val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
+            val currentDurationMs = measurementClock.elapsedMs()
             val partialMetrics = calculateMetrics(
                 baseMetrics = metrics,
                 samples = samples,
@@ -432,7 +416,7 @@ class ObdBenchmarkEngine {
             val errLog = "ERRORE APPLICATIVO CRITICO: ${e.javaClass.simpleName} - ${e.message}\n${Log.getStackTraceString(e)}"
             log(errLog, isError = true)
 
-            val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
+            val currentDurationMs = measurementClock.elapsedMs()
             val partialMetrics = calculateMetrics(
                 baseMetrics = metrics,
                 samples = samples,

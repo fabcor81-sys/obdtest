@@ -99,44 +99,27 @@ object ObdResponseParser {
         // 5. Modalità ECU ABS Lotus vs OBD Generico
         val cmdClean = commandSent.trim().replace("\r", "").replace(" ", "").uppercase(Locale.US)
 
-        if (profile == ObdProfile.LOTUS_ABS) {
-            // Profilo ECU ABS Lotus: la risposta non è necessariamente la solita 41 00 di una ECU motore standard.
-            // Se la ECU ABS risponde con 4100 o con byte esadecimali non-vuoti, consideriamo la risposta ricevuta.
-            return if (cleaned.isNotBlank()) {
-                ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = cleaned)
-            } else {
-                ParseResult(SampleStatus.ECU_ERROR, cleaned)
-            }
+        // Only validate documented Mode 01 payload lengths. Unsupported commands
+        // must not turn arbitrary text or a negative ECU response into a success.
+        val dataBytes = when (cmdClean) {
+            "0100", "0120", "0140", "0160", "0180", "01A0", "01C0" -> 4
+            "010C", "0110" -> 2
+            "0105", "010A", "010D", "010F", "0111" -> 1
+            else -> return ParseResult(SampleStatus.ECU_ERROR, cleaned)
         }
-
-        if (cmdClean == "0100") {
-            // Per OBD Generico PID 0100 ci aspettiamo "41 00" seguito da 4 byte esadecimali dati (8 caratteri hex)
-            val hexOnly = upperCleaned.replace("SEARCHING...", "").replace(" ", "")
-            val expectedHeader = "4100"
-
-            val matchIndex = hexOnly.indexOf(expectedHeader)
-            if (matchIndex != -1) {
-                val remainingHex = hexOnly.substring(matchIndex + expectedHeader.length)
-                val validDataHex = remainingHex.takeWhile { it in '0'..'9' || it in 'A'..'F' }
-                if (validDataHex.length >= 8) {
-                    val payload = expectedHeader + validDataHex.take(8)
-                    return ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = payload)
-                }
+        val expectedHeader = "41" + cmdClean.substring(2)
+        // Keep response lines separate: truncated replies from different ECUs
+        // must never be concatenated into a seemingly complete payload.
+        val payload = rawResponse.substringBefore(">").split('\r', '\n')
+            .map { it.uppercase(Locale.US).replace("SEARCHING...", "").filterNot { c -> c.isWhitespace() } }
+            .firstOrNull { line ->
+                line.length == expectedHeader.length + dataBytes * 2 &&
+                    line.startsWith(expectedHeader) && line.all { it in "0123456789ABCDEF" }
             }
-            return ParseResult(SampleStatus.ECU_ERROR, cleaned)
-        } else if (cmdClean.startsWith("01")) {
-            val expectedHeader = "41" + cmdClean.substring(2)
-            val hexOnly = upperCleaned.replace("SEARCHING...", "").replace(" ", "")
-            if (hexOnly.contains(expectedHeader)) {
-                return ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = expectedHeader)
-            }
-            return ParseResult(SampleStatus.ECU_ERROR, cleaned)
+        return if (payload != null) {
+            ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = payload)
         } else {
-            return if (cleaned.isNotBlank()) {
-                ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = cleaned)
-            } else {
-                ParseResult(SampleStatus.ECU_ERROR, cleaned)
-            }
+            ParseResult(SampleStatus.ECU_ERROR, cleaned)
         }
     }
 }
