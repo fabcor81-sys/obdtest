@@ -317,51 +317,40 @@ fun DeviceSelectorCard(
                 expanded = expanded && !isTesting,
                 onExpandedChange = { if (!isTesting) expanded = !expanded }
             ) {
-                Surface(
-                    onClick = { if (!isTesting) expanded = !expanded },
-                    shape = RoundedCornerShape(8.dp),
-                    color = RacingSurfaceSecondary,
+                OutlinedTextField(
+                    value = selectedDevice?.let { "${it.name}\nMAC: ${it.address}" } ?: "Nessun dispositivo selezionato",
+                    onValueChange = {},
+                    readOnly = true,
+                    enabled = !isTesting,
+                    singleLine = false,
+                    maxLines = 2,
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Bluetooth,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = RacingYellow
+                        )
+                    },
+                    textStyle = LocalTextStyle.current.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 13.sp
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = RacingText,
+                        unfocusedTextColor = RacingText,
+                        focusedBorderColor = RacingYellow,
+                        unfocusedBorderColor = RacingSurfaceSecondary,
+                        focusedContainerColor = RacingSurfaceSecondary,
+                        unfocusedContainerColor = RacingSurfaceSecondary
+                    ),
                     modifier = Modifier
                         .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                Icons.Default.Bluetooth,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = RacingYellow
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = selectedDevice?.name ?: "Nessun dispositivo selezionato",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp,
-                                    color = RacingText
-                                )
-                                if (selectedDevice != null) {
-                                    Text(
-                                        text = "MAC: ${selectedDevice.address}",
-                                        fontSize = 10.sp,
-                                        color = RacingTextSecondary
-                                    )
-                                }
-                            }
-                        }
-                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
-                    }
-                }
+                        .height(54.dp)
+                )
 
                 ExposedDropdownMenu(
                     expanded = expanded && !isTesting,
