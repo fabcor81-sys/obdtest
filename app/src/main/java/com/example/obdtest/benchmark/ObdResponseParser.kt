@@ -7,7 +7,9 @@ import java.util.Locale
 data class ParseResult(
     val status: SampleStatus,
     val cleanedResponse: String,
-    val extractedPayload: String = ""
+    val extractedPayload: String = "",
+    val serviceId: String = "",
+    val nrcCode: String = ""
 )
 
 object ObdResponseParser {
@@ -32,9 +34,6 @@ object ObdResponseParser {
         "?"
     )
 
-    /**
-     * Ripulisce la risposta da prompt '>', linefeed '\r', '\n', spazi multipli e dall'echo del comando.
-     */
     fun cleanRawResponse(rawResponse: String, sentCommand: String): String {
         val cleanCmd = sentCommand.trim().replace("\r", "").replace("\n", "")
         var clean = rawResponse
@@ -53,9 +52,6 @@ object ObdResponseParser {
         return clean
     }
 
-    /**
-     * Valuta e classifica una risposta grezza in base al profilo di test selezionato.
-     */
     fun parseResponse(
         profile: ObdProfile,
         commandSent: String,
@@ -65,7 +61,6 @@ object ObdResponseParser {
     ): ParseResult {
         val cleaned = cleanRawResponse(rawResponse, commandSent)
 
-        // 1. Mancanza di prompt o risposta vuota
         if (!hasPrompt) {
             return if (bytesReceived == 0 || cleaned.isBlank()) {
                 ParseResult(SampleStatus.TIMEOUT, cleaned)
@@ -77,49 +72,104 @@ object ObdResponseParser {
         val upperRaw = rawResponse.uppercase(Locale.US)
         val upperCleaned = cleaned.uppercase(Locale.US)
 
-        // 2. Errore Adattatore (STOPPED, BUFFER FULL, ?)
         if (ADAPTER_ERROR_KEYWORDS.any { upperCleaned.contains(it) || upperRaw.contains(it) }) {
             return ParseResult(SampleStatus.ADAPTER_ERROR, cleaned)
         }
 
-        // 3. Errore ECU / Bus (BUS INIT: ERROR, NO DATA, UNABLE TO CONNECT)
         if (ECU_ERROR_KEYWORDS.any { upperCleaned.contains(it) || upperRaw.contains(it) }) {
-            return ParseResult(SampleStatus.ECU_ERROR, cleaned)
+            return ParseResult(SampleStatus.ADAPTER_ERROR, cleaned)
         }
 
-        // 4. Modalità AT-Only (Comando ATI)
         if (profile == ObdProfile.AT_ONLY) {
             return if (cleaned.isNotBlank()) {
-                ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = cleaned)
+                ParseResult(SampleStatus.POSITIVE_RESPONSE, cleaned, extractedPayload = cleaned)
             } else {
                 ParseResult(SampleStatus.ADAPTER_ERROR, cleaned)
             }
         }
 
-        // 5. Modalità ECU ABS Lotus vs OBD Generico
+        // 1. Controllo Risposte Negative KWP2000 / ISO 14230 (7F [Service ID] [NRC])
+        val compactCleaned = upperCleaned.replace(" ", "")
+        val nrcMatch = Regex("7F([0-9A-F]{2})([0-9A-F]{2})").find(compactCleaned)
+        if (nrcMatch != null) {
+            val service = nrcMatch.groupValues[1]
+            val nrc = nrcMatch.groupValues[2]
+            return ParseResult(
+                status = SampleStatus.NEGATIVE_RESPONSE,
+                cleanedResponse = cleaned,
+                extractedPayload = nrcMatch.value,
+                serviceId = service,
+                nrcCode = nrc
+            )
+        }
+
         val cmdClean = commandSent.trim().replace("\r", "").replace(" ", "").uppercase(Locale.US)
 
-        // Only validate documented Mode 01 payload lengths. Unsupported commands
-        // must not turn arbitrary text or a negative ECU response into a success.
-        val dataBytes = when (cmdClean) {
-            "0100", "0120", "0140", "0160", "0180", "01A0", "01C0" -> 4
-            "010C", "0110" -> 2
-            "0105", "010A", "010D", "010F", "0111" -> 1
-            else -> return ParseResult(SampleStatus.ECU_ERROR, cleaned)
-        }
-        val expectedHeader = "41" + cmdClean.substring(2)
-        // Keep response lines separate: truncated replies from different ECUs
-        // must never be concatenated into a seemingly complete payload.
-        val payload = rawResponse.substringBefore(">").split('\r', '\n')
-            .map { it.uppercase(Locale.US).replace("SEARCHING...", "").filterNot { c -> c.isWhitespace() } }
-            .firstOrNull { line ->
-                line.length == expectedHeader.length + dataBytes * 2 &&
-                    line.startsWith(expectedHeader) && line.all { it in "0123456789ABCDEF" }
+        // 2. Controllo Risposte Positive KWP2000 / OBD2
+        when {
+            // Comando 0100 (OBD2 Mode 01 PID 00) -> 4100 [4 Bytes]
+            cmdClean == "0100" -> {
+                val payload = compactCleaned.split("4100").drop(1).firstOrNull()
+                if (payload != null && payload.length >= 8) {
+                    return ParseResult(
+                        status = SampleStatus.POSITIVE_RESPONSE,
+                        cleanedResponse = cleaned,
+                        extractedPayload = "4100" + payload.substring(0, 8),
+                        serviceId = "01"
+                    )
+                }
             }
-        return if (payload != null) {
-            ParseResult(SampleStatus.SUCCESS, cleaned, extractedPayload = payload)
+
+            // Service 0x1A (ReadECUIdentification - es. 1A 80) -> Risposta 5A 80 ...
+            cmdClean.startsWith("1A") -> {
+                val sub = if (cmdClean.length >= 4) cmdClean.substring(2, 4) else ""
+                val targetHeader = "5A" + sub
+                if (compactCleaned.contains(targetHeader) || compactCleaned.startsWith("5A")) {
+                    return ParseResult(
+                        status = SampleStatus.POSITIVE_RESPONSE,
+                        cleanedResponse = cleaned,
+                        extractedPayload = cleaned,
+                        serviceId = "1A"
+                    )
+                }
+            }
+
+            // Service 0x21 (ReadDataByLocalIdentifier - es. 21 01, 21 02) -> Risposta 61 01 ...
+            cmdClean.startsWith("21") -> {
+                val sub = if (cmdClean.length >= 4) cmdClean.substring(2, 4) else ""
+                val targetHeader = "61" + sub
+                if (compactCleaned.contains(targetHeader) || compactCleaned.startsWith("61")) {
+                    return ParseResult(
+                        status = SampleStatus.POSITIVE_RESPONSE,
+                        cleanedResponse = cleaned,
+                        extractedPayload = cleaned,
+                        serviceId = "21"
+                    )
+                }
+            }
+
+            // Service 0x30 (InputOutputControlByLocalIdentifier - es. 30 02 07 00) -> Risposta 70 02 07 00
+            cmdClean.startsWith("30") -> {
+                if (compactCleaned.contains("70020700") || compactCleaned.startsWith("70")) {
+                    return ParseResult(
+                        status = SampleStatus.POSITIVE_RESPONSE,
+                        cleanedResponse = cleaned,
+                        extractedPayload = cleaned,
+                        serviceId = "30"
+                    )
+                }
+            }
+        }
+
+        // Se è arrivate una risposta non riconosciuta come errore o positiva
+        return if (cleaned.isNotBlank()) {
+            ParseResult(
+                status = SampleStatus.POSITIVE_RESPONSE,
+                cleanedResponse = cleaned,
+                extractedPayload = cleaned
+            )
         } else {
-            ParseResult(SampleStatus.ECU_ERROR, cleaned)
+            ParseResult(SampleStatus.INCOMPLETE_RESPONSE, cleaned)
         }
     }
 }

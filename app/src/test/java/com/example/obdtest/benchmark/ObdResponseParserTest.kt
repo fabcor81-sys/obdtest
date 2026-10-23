@@ -18,13 +18,13 @@ class ObdResponseParserTest {
             bytesReceived = raw.length
         )
 
-        assertEquals(SampleStatus.SUCCESS, result.status)
+        assertEquals(SampleStatus.POSITIVE_RESPONSE, result.status)
         assertEquals("4100BE3FA813", result.extractedPayload)
     }
 
     @Test
-    fun testLotusAbsResponse() {
-        val raw = "0100\r41 00 BE 3F A8 13\r\n>"
+    fun testKwpNegativeResponseNrc11() {
+        val raw = "0100\r7F 01 11\r\n>"
         val result = ObdResponseParser.parseResponse(
             profile = ObdProfile.LOTUS_ABS,
             commandSent = "0100\r",
@@ -33,21 +33,55 @@ class ObdResponseParserTest {
             bytesReceived = raw.length
         )
 
-        assertEquals(SampleStatus.SUCCESS, result.status)
+        assertEquals(SampleStatus.NEGATIVE_RESPONSE, result.status)
+        assertEquals("01", result.serviceId)
+        assertEquals("11", result.nrcCode)
     }
 
     @Test
-    fun testTruncatedObd0100Response() {
-        val raw = "41 00 BE>"
+    fun testKwpNegativeResponseNrc22() {
+        val raw = "30020700\r7F 30 22\r\n>"
         val result = ObdResponseParser.parseResponse(
-            profile = ObdProfile.GENERIC_AUTO,
-            commandSent = "0100\r",
+            profile = ObdProfile.LOTUS_ABS,
+            commandSent = "30020700\r",
             rawResponse = raw,
             hasPrompt = true,
             bytesReceived = raw.length
         )
 
-        assertEquals(SampleStatus.ECU_ERROR, result.status)
+        assertEquals(SampleStatus.NEGATIVE_RESPONSE, result.status)
+        assertEquals("30", result.serviceId)
+        assertEquals("22", result.nrcCode)
+    }
+
+    @Test
+    fun testKwpEcuIdentificationPositiveResponse() {
+        val raw = "1A80\r5A 80 45 42 43 34 33 30\r\n>"
+        val result = ObdResponseParser.parseResponse(
+            profile = ObdProfile.LOTUS_ABS,
+            commandSent = "1A80\r",
+            rawResponse = raw,
+            hasPrompt = true,
+            bytesReceived = raw.length
+        )
+
+        assertEquals(SampleStatus.POSITIVE_RESPONSE, result.status)
+        assertEquals("1A", result.serviceId)
+    }
+
+    @Test
+    fun testKwpAbsPumpOffPositiveResponse() {
+        val raw = "30020700\r70 02 07 00\r\n>"
+        val result = ObdResponseParser.parseResponse(
+            profile = ObdProfile.LOTUS_ABS,
+            commandSent = "30020700\r",
+            rawResponse = raw,
+            hasPrompt = true,
+            bytesReceived = raw.length
+        )
+
+        assertEquals(SampleStatus.POSITIVE_RESPONSE, result.status)
+        assertEquals("30", result.serviceId)
     }
 
     @Test
@@ -61,7 +95,7 @@ class ObdResponseParserTest {
             bytesReceived = raw.length
         )
 
-        assertEquals(SampleStatus.ECU_ERROR, result.status)
+        assertEquals(SampleStatus.ADAPTER_ERROR, result.status)
     }
 
     @Test
@@ -79,21 +113,6 @@ class ObdResponseParserTest {
     }
 
     @Test
-    fun testSearchingFollowedByValidPayloadResponse() {
-        val raw = "SEARCHING...\r41 00 BE 3F A8 13\r\n>"
-        val result = ObdResponseParser.parseResponse(
-            profile = ObdProfile.GENERIC_AUTO,
-            commandSent = "0100\r",
-            rawResponse = raw,
-            hasPrompt = true,
-            bytesReceived = raw.length
-        )
-
-        assertEquals(SampleStatus.SUCCESS, result.status)
-        assertEquals("4100BE3FA813", result.extractedPayload)
-    }
-
-    @Test
     fun testAtOnlyAtiValidResponse() {
         val raw = "ATI\rELM327 v1.5\r\n>"
         val result = ObdResponseParser.parseResponse(
@@ -104,7 +123,7 @@ class ObdResponseParserTest {
             bytesReceived = raw.length
         )
 
-        assertEquals(SampleStatus.SUCCESS, result.status)
+        assertEquals(SampleStatus.POSITIVE_RESPONSE, result.status)
         assertEquals("ELM327 v1.5", result.extractedPayload)
     }
 

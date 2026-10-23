@@ -27,7 +27,6 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     private var benchmarkJob: Job? = null
 
     init {
-        // Monitoraggio in tempo reale dei log dall'engine
         viewModelScope.launch {
             benchmarkEngine.logs.collect { newLogs ->
                 _uiState.update { it.copy(logs = newLogs) }
@@ -146,13 +145,16 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(selectedRequestCount = count) }
     }
 
+    fun toggleAbsPumpOffAuthorization(authorized: Boolean) {
+        _uiState.update { it.copy(isAbsPumpOffAuthorized = authorized) }
+    }
+
     fun startBenchmarkTest() {
         bluetoothManager.stopDiscovery()
 
         val selectedDeviceItem = _uiState.value.selectedDevice ?: return
         val bluetoothDevice = bluetoothManager.getDeviceByAddress(selectedDeviceItem.address) ?: return
 
-        // Resetta lo stato di sessione precedente prima di avviare un nuovo test
         benchmarkEngine.clearLogs()
         _uiState.update {
             it.copy(
@@ -160,11 +162,10 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 currentMetrics = null,
                 exportedCsvPath = null,
                 status = BenchmarkStatus.Connecting,
-                statusMessage = "Inizio benchmark metrologico [${it.selectedProfile.label}] (${it.selectedRequestCount} richieste)..."
+                statusMessage = "Inizio benchmark metrologico sequenziale [${it.selectedProfile.label}] (${it.selectedRequestCount} campioni per test)..."
             )
         }
 
-        // Se un job precedente è in corso, attende la sua cancellazione prima di avviarne uno nuovo
         val previousJob = benchmarkJob
         benchmarkJob = viewModelScope.launch(Dispatchers.IO) {
             previousJob?.cancel()
@@ -177,8 +178,8 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     device = bluetoothDevice,
                     transportMode = currentConfig.selectedTransportMode,
                     obdProfile = currentConfig.selectedProfile,
-                    customCommand = currentConfig.customCommand,
                     targetRequestCount = currentConfig.selectedRequestCount,
+                    isAbsPumpOffAuthorized = currentConfig.isAbsPumpOffAuthorized,
                     timeoutMs = ObdBenchmarkEngine.DEFAULT_TIMEOUT_MS,
                     onStatusUpdate = { status, msg ->
                         _uiState.update {
@@ -193,7 +194,6 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 )
 
-                // Salvataggio automatico del report CSV al termine del test
                 try {
                     val autoCsvFile = benchmarkEngine.exportMetricsToCsv(getApplication(), metrics)
                     _uiState.update {

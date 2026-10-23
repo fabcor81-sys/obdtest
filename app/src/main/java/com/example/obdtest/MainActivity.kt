@@ -76,6 +76,12 @@ class MainActivity : ComponentActivity() {
                         onSelectProfile = { profile ->
                             viewModel.selectObdProfile(profile)
                         },
+                        onSelectRequestCount = { count ->
+                            viewModel.selectRequestCount(count)
+                        },
+                        onToggleAbsPumpOffAuthorization = { authorized ->
+                            viewModel.toggleAbsPumpOffAuthorization(authorized)
+                        },
                         onStartTest = {
                             viewModel.startBenchmarkTest()
                         },

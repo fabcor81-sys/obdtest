@@ -44,6 +44,8 @@ fun ObdBenchmarkScreen(
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
+    onSelectRequestCount: (Int) -> Unit,
+    onToggleAbsPumpOffAuthorization: (Boolean) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
     onSaveComparison: () -> Unit,
@@ -64,7 +66,7 @@ fun ObdBenchmarkScreen(
                             color = RacingYellow
                         )
                         Text(
-                            text = "Motorsport Performance & Latenza Adattatori OBD2",
+                            text = "Motorsport Performance & Latenza Lotus EBC430",
                             style = MaterialTheme.typography.bodySmall,
                             fontSize = 11.sp,
                             color = RacingTextSecondary
@@ -100,7 +102,7 @@ fun ObdBenchmarkScreen(
             } else if (!uiState.isBluetoothEnabled) {
                 BluetoothDisabledCard(onRefreshDevices = onRefreshDevices)
             } else {
-                // 1. Selettore Dispositivo Bluetooth Compattato
+                // 1. Selettore Dispositivo Bluetooth
                 DeviceSelectorCard(
                     devices = uiState.pairedDevices,
                     selectedDevice = uiState.selectedDevice,
@@ -115,20 +117,24 @@ fun ObdBenchmarkScreen(
                             uiState.status !is BenchmarkStatus.Error
                 )
 
-                // 2. Controlli Trasporto, Profilo (Affiancati Orizzontalmente) e Pulsante Avvio
+                // 2. Controlli Trasporto, Profilo, Campioni, Autorizzazione Pump OFF e Pulsante Unico Avvio
                 TestControlCard(
                     status = uiState.status,
                     statusMessage = uiState.statusMessage,
                     selectedTransportMode = uiState.selectedTransportMode,
                     selectedProfile = uiState.selectedProfile,
+                    selectedRequestCount = uiState.selectedRequestCount,
+                    isAbsPumpOffAuthorized = uiState.isAbsPumpOffAuthorized,
                     isDeviceSelected = uiState.selectedDevice != null,
                     onSelectTransportMode = onSelectTransportMode,
                     onSelectProfile = onSelectProfile,
+                    onSelectRequestCount = onSelectRequestCount,
+                    onToggleAbsPumpOffAuthorization = onToggleAbsPumpOffAuthorization,
                     onStartTest = onStartTest,
                     onStopTest = onStopTest
                 )
 
-                // 3. Scheda Risultati
+                // 3. Scheda Risultati & Riepilogo Sequenza 6 Test
                 uiState.currentMetrics?.let { metrics ->
                     CurrentMetricsCard(
                         metrics = metrics,
@@ -399,9 +405,13 @@ fun TestControlCard(
     statusMessage: String,
     selectedTransportMode: TransportMode,
     selectedProfile: ObdProfile,
+    selectedRequestCount: Int,
+    isAbsPumpOffAuthorized: Boolean,
     isDeviceSelected: Boolean,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
+    onSelectRequestCount: (Int) -> Unit,
+    onToggleAbsPumpOffAuthorization: (Boolean) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit
 ) {
@@ -479,13 +489,58 @@ fun TestControlCard(
                 }
             }
 
+            // Riga 3: Numero Campioni Ripetibili (10, 100, 500, 1000)
+            Text(
+                text = "NUMERO DI CAMPIONI PER TEST",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = RacingYellow
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf(10, 100, 500, 1000).forEach { count ->
+                    FilterChip(
+                        selected = selectedRequestCount == count,
+                        onClick = { if (!isTesting) onSelectRequestCount(count) },
+                        label = { Text("$count", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (selectedRequestCount == count) RacingBackground else RacingText) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = RacingYellow,
+                            containerColor = RacingSurfaceSecondary
+                        ),
+                        enabled = !isTesting,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // Autorizzazione di Sicurezza opzionale per il Test 6 (ABS Pump OFF)
             if (selectedProfile == ObdProfile.LOTUS_ABS) {
-                Text(
-                    text = "⚙️ Lotus ABS: ATZ ➔ AT L1 ➔ AT SH 812BF1 ➔ AT WM 812BF13E ➔ AT SP 5",
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = RacingYellow
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Autorizza Test 6: ABS Pump OFF (30 02 07 00 - Veicolo Fermo)",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isAbsPumpOffAuthorized) RacingYellow else RacingTextSecondary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = isAbsPumpOffAuthorized,
+                        onCheckedChange = { if (!isTesting) onToggleAbsPumpOffAuthorization(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = RacingYellow,
+                            checkedTrackColor = RacingSurfaceSecondary
+                        ),
+                        enabled = !isTesting,
+                        modifier = Modifier.height(24.dp)
+                    )
+                }
             }
 
             HorizontalDivider(color = RacingSurfaceSecondary)
@@ -513,7 +568,7 @@ fun TestControlCard(
                 }
             }
 
-            if (status is BenchmarkStatus.RunningTest) {
+            if (status is BenchmarkStatus.RunningTestSequence) {
                 val progress = status.completedRequests.toFloat() / status.targetRequests.toFloat()
                 LinearProgressIndicator(
                     progress = { progress },
@@ -591,7 +646,7 @@ fun CurrentMetricsCard(
             ) {
                 Column {
                     Text(
-                        text = "RISULTATI: ${metrics.deviceName} ${if (metrics.isPartialSession) "[PARZIALE]" else ""}",
+                        text = "RISULTATI SEQUENZA TEST: ${metrics.deviceName} ${if (metrics.isPartialSession) "[PARZIALE]" else ""}",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = RacingYellow
@@ -626,7 +681,7 @@ fun CurrentMetricsCard(
                 MetricItem(
                     label = "TASSO DI SUCCESSO",
                     value = "${String.format(Locale.US, "%.1f", metrics.successRatePercent)}%",
-                    subValue = "SUCCESS: ${metrics.successCount}/${metrics.totalCommandsSent} (${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} PID/s)"
+                    subValue = "POS: ${metrics.successCount}/${metrics.totalCommandsSent} (${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} PID/s)"
                 )
             }
 
@@ -658,33 +713,36 @@ fun CurrentMetricsCard(
                 )
             }
 
-            HorizontalDivider(color = RacingSurfaceSecondary)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            // Dettaglio dei singoli test della sequenza
+            if (metrics.testSummaries.isNotEmpty()) {
+                HorizontalDivider(color = RacingSurfaceSecondary)
                 Text(
-                    text = "OK: ${metrics.successCount}",
+                    text = "DETTAGLIO RISULTATI PER COMANDO:",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = RacingSuccess
+                    color = RacingYellow
                 )
-                Text(
-                    text = "ECU ERR: ${metrics.ecuErrorCount}",
-                    fontSize = 10.sp,
-                    color = if (metrics.ecuErrorCount > 0) RacingError else RacingTextSecondary
-                )
-                Text(
-                    text = "ADAPTER ERR: ${metrics.adapterErrorCount}",
-                    fontSize = 10.sp,
-                    color = if (metrics.adapterErrorCount > 0) RacingYellow else RacingTextSecondary
-                )
-                Text(
-                    text = "TIMEOUT: ${metrics.timeoutCount}",
-                    fontSize = 10.sp,
-                    color = if (metrics.timeoutCount > 0) RacingError else RacingTextSecondary
-                )
+
+                metrics.testSummaries.forEach { s ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${s.testName} (${s.commandSent})",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = RacingText,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = if (s.isSingleExecution) s.singleExecutionResult else "P50: ${String.format(Locale.US, "%.1f", s.p50Ms)}ms | POS: ${s.positiveResponses}/${s.samplesExecuted}",
+                            fontSize = 10.sp,
+                            color = if (s.positiveResponses > 0) RacingSuccess else RacingError
+                        )
+                    }
+                }
             }
 
             if (status is BenchmarkStatus.Completed || status is BenchmarkStatus.Cancelled) {

@@ -1,11 +1,15 @@
 package com.example.obdtest.ui
 
 enum class SampleStatus {
-    SUCCESS,
-    ECU_ERROR,
-    ADAPTER_ERROR,
-    TIMEOUT,
-    INCOMPLETE_RESPONSE
+    POSITIVE_RESPONSE,   // Risposta KWP2000 o AT positiva con prompt
+    NEGATIVE_RESPONSE,   // Risposta negativa KWP2000 (es. 7F 01 11 / 7F 30 22)
+    TIMEOUT,             // Nessuna risposta o nessun prompt entro il timeout
+    INCOMPLETE_RESPONSE, // Risposta parziale priva di prompt o troncata
+    ADAPTER_ERROR,       // Errore dell'adattatore ELM (es. BUS INIT: ERROR, UNABLE TO CONNECT, ?)
+    TRANSPORT_ERROR,     // Errore del socket/GATT Bluetooth
+    UNSUPPORTED,         // Servizio o comando non supportato
+    NOT_VERIFIED,        // Comando o test non ancora verificato su hardware
+    SUCCESS              // Compatibilità con codice precedente
 }
 
 enum class TransportMode(val label: String) {
@@ -30,7 +34,7 @@ enum class ObdProfile(
         description = "Inizializzazione standard OBD2 AT SP 0"
     ),
     LOTUS_ABS(
-        label = "ECU ABS Lotus (KWP Fast 812BF1)",
+        label = "ECU ABS Lotus (EBC430 KWP Fast)",
         defaultCommand = "0100\r",
         description = "Sequenza specifica: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5"
     )
@@ -52,7 +56,10 @@ sealed interface BenchmarkStatus {
     object Connecting : BenchmarkStatus
     object Initializing : BenchmarkStatus
     object Warmup : BenchmarkStatus
-    data class RunningTest(
+    data class RunningTestSequence(
+        val currentTestIndex: Int,
+        val totalTests: Int,
+        val testName: String,
         val completedRequests: Int,
         val targetRequests: Int,
         val currentPidsPerSec: Double,
@@ -65,12 +72,16 @@ sealed interface BenchmarkStatus {
 
 data class CommandTimingSample(
     val sampleIndex: Int,
+    val testName: String = "",
     val t0Nanos: Long,
     val t1Nanos: Long,
     val t2Nanos: Long,
+    val tPayloadNanos: Long = 0L,
     val t3Nanos: Long,
     val writeDurationMs: Double,
     val timeToFirstByteMs: Double,
+    val payloadRxDurationMs: Double = 0.0,
+    val promptDelayMs: Double = 0.0,
     val rxDurationMs: Double,
     val totalRoundTripMs: Double,
     val interRequestIntervalMs: Double,
@@ -79,7 +90,34 @@ data class CommandTimingSample(
     val isTimeout: Boolean,
     val commandSent: String,
     val rawResponse: String,
-    val parsedResponse: String = ""
+    val parsedResponse: String = "",
+    val serviceId: String = "",
+    val nrcCode: String = ""
+)
+
+data class SingleTestSummary(
+    val testName: String,
+    val commandSent: String,
+    val samplesRequested: Int,
+    val samplesExecuted: Int,
+    val positiveResponses: Int,
+    val negativeResponses: Int,
+    val timeouts: Int,
+    val adapterErrors: Int,
+    val minLatencyMs: Double,
+    val avgLatencyMs: Double,
+    val maxLatencyMs: Double,
+    val p50Ms: Double,
+    val p95Ms: Double,
+    val p99Ms: Double,
+    val stdDevMs: Double,
+    val jitterMs: Double,
+    val avgInterRequestIntervalMs: Double,
+    val commandsPerSecond: Double,
+    val percentUnder30ms: Double,
+    val percentUnder40ms: Double,
+    val isSingleExecution: Boolean = false,
+    val singleExecutionResult: String = ""
 )
 
 data class BenchmarkMetrics(
@@ -95,6 +133,7 @@ data class BenchmarkMetrics(
     val warmupRequestCount: Int = 3,
     val warmupFirstLatencyMs: Double = 0.0,
     val isWarmupSuccess: Boolean = true,
+    val isAbsPumpOffAuthorized: Boolean = false,
     val totalCommandsSent: Int = 0,
     val successCount: Int = 0,
     val ecuErrorCount: Int = 0,
@@ -116,6 +155,7 @@ data class BenchmarkMetrics(
     val testDurationMs: Long = 0L,
     val timeoutMs: Long = 2500L,
     val isPartialSession: Boolean = false,
+    val testSummaries: List<SingleTestSummary> = emptyList(),
     val initLog: List<String> = emptyList(),
     val sessionLogs: List<String> = emptyList(),
     val rawSamples: List<CommandTimingSample> = emptyList()
@@ -134,6 +174,7 @@ data class ObdUiState(
     val selectedProfile: ObdProfile = ObdProfile.AT_ONLY,
     val customCommand: String = "0100\r",
     val selectedRequestCount: Int = 100,
+    val isAbsPumpOffAuthorized: Boolean = false,
     val isScanning: Boolean = false,
     val isBluetoothEnabled: Boolean = true,
     val hasPermissions: Boolean = false,

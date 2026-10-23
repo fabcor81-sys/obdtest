@@ -18,6 +18,7 @@ import com.example.obdtest.ui.BenchmarkStatus
 import com.example.obdtest.ui.CommandTimingSample
 import com.example.obdtest.ui.ObdProfile
 import com.example.obdtest.ui.SampleStatus
+import com.example.obdtest.ui.SingleTestSummary
 import com.example.obdtest.ui.TransportMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,14 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.math.sqrt
+
+data class BenchmarkTestDefinition(
+    val name: String,
+    val command: String,
+    val repetitions: Int,
+    val isSingleExecution: Boolean = false,
+    val requiresAuthorization: Boolean = false
+)
 
 class ObdBenchmarkEngine {
 
@@ -60,12 +69,10 @@ class ObdBenchmarkEngine {
         private val CCCD_DESCRIPTOR_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 
-    // Classic Bluetooth
     private var socket: BluetoothSocket? = null
     private var inputStream: InputStream? = null
     private var outputStream: OutputStream? = null
 
-    // BLE GATT
     private var bluetoothGatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
     private var txCharacteristic: BluetoothGattCharacteristic? = null
@@ -84,6 +91,9 @@ class ObdBenchmarkEngine {
 
     @Volatile
     private var bleFirstByteTimestampNanos = 0L
+
+    @Volatile
+    private var blePayloadTimestampNanos = 0L
 
     @Volatile
     private var blePromptTimestampNanos = 0L
@@ -122,9 +132,9 @@ class ObdBenchmarkEngine {
         device: BluetoothDevice,
         transportMode: TransportMode = TransportMode.AUTO,
         obdProfile: ObdProfile = ObdProfile.AT_ONLY,
-        customCommand: String = "0100\r",
         targetRequestCount: Int = 100,
         warmupCount: Int = 3,
+        isAbsPumpOffAuthorized: Boolean = false,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         onStatusUpdate: (BenchmarkStatus, String) -> Unit,
         onMetricsUpdate: (BenchmarkMetrics) -> Unit
@@ -147,25 +157,35 @@ class ObdBenchmarkEngine {
         isBleMode = isExplicitBle
         val effectiveTransport = if (isBleMode) TransportMode.BLE_GATT else TransportMode.CLASSIC_SPP
 
-        val benchmarkMode = if (obdProfile == ObdProfile.AT_ONLY) BenchmarkMode.AT_ONLY else BenchmarkMode.OBD_PID
-        val targetCommand = if (obdProfile == ObdProfile.AT_ONLY) "ATI\r" else customCommand.trim().let { if (it.endsWith("\r")) it else "$it\r" }
-
         var metrics = BenchmarkMetrics(
             deviceName = device.name ?: device.address,
             deviceAddress = device.address,
             effectiveTransport = effectiveTransport,
             obdProfile = obdProfile,
-            measuredCommand = targetCommand.trim(),
-            benchmarkMode = benchmarkMode,
             targetRequestCount = targetRequestCount,
             warmupRequestCount = warmupCount,
+            isAbsPumpOffAuthorized = isAbsPumpOffAuthorized,
             timeoutMs = timeoutMs
         )
 
-        val samples = mutableListOf<CommandTimingSample>()
-        val measurementClock = MeasurementClock { SystemClock.elapsedRealtimeNanos() }
-        var totalRawBytesReceived = 0L
-        var totalAppBytesReceived = 0L
+        val allSamples = mutableListOf<CommandTimingSample>()
+        val testSummaries = mutableListOf<SingleTestSummary>()
+        val connectionStartMs = SystemClock.elapsedRealtime()
+
+        val testSequence = listOf(
+            BenchmarkTestDefinition("1. Identificazione ELM", "ATI\r", targetRequestCount),
+            BenchmarkTestDefinition("2. Test diagnostico precedente", "0100\r", targetRequestCount),
+            BenchmarkTestDefinition("3. ECU Identification", "1A80\r", targetRequestCount),
+            BenchmarkTestDefinition("4. Battery Voltage", "2101\r", targetRequestCount),
+            BenchmarkTestDefinition("5. ABS Status", "2102\r", targetRequestCount),
+            BenchmarkTestDefinition(
+                name = "6. ABS Pump OFF",
+                command = "30020700\r",
+                repetitions = 1,
+                isSingleExecution = true,
+                requiresAuthorization = true
+            )
+        )
 
         try {
             log("Connessione a ${device.name ?: device.address} via ${effectiveTransport.label}...")
@@ -187,7 +207,6 @@ class ObdBenchmarkEngine {
                 }
             }
 
-            metrics = metrics.copy(effectiveTransport = BenchmarkPolicy.effectiveTransport(isBleMode))
             coroutineContext.ensureActive()
             log("Connessione stabilita con successo via ${if (isBleMode) "BLE GATT" else "Classic SPP"}!")
 
@@ -197,14 +216,19 @@ class ObdBenchmarkEngine {
 
             fun sendInitCmd(cmd: String, cmdTimeout: Long = timeoutMs): RawCommandResult {
                 val res = executeRawCommand(cmd, cmdTimeout)
-                val entry = "CMD: ${cmd.trim()} -> RESP: ${if (res.cleanResponse.isBlank()) "NESSUNA RISPOSTA" else res.cleanResponse}"
+                val entry = "CMD: ${cmd.trim()} -> RESP: ${if (res.cleanResponse.isBlank()) "OK/NO_RESP" else res.cleanResponse}"
                 initLogEntries.add(entry)
                 log("[INIT] $entry")
-                metrics = metrics.copy(initLog = initLogEntries.toList())
-                if (!BenchmarkPolicy.acceptsInitialization(cmd, res)) {
-                    throw IllegalStateException("Inizializzazione fallita: ${cmd.trim()} (${res.cleanResponse.ifBlank { "nessuna risposta" }})")
-                }
                 return res
+            }
+
+            fun verifyInitResp(cmdName: String, res: RawCommandResult): Boolean {
+                val cleanUpper = res.cleanResponse.uppercase(Locale.US)
+                val isOk = res.hasPrompt && !res.isTimeout && !cleanUpper.contains("ERROR") && !cleanUpper.contains("?")
+                if (!isOk) {
+                    log("ERRORE INIZIALIZZAZIONE [$cmdName]: risposta non valida -> '${res.cleanResponse}'", isError = true)
+                }
+                return isOk
             }
 
             val elmVersion: String
@@ -242,17 +266,24 @@ class ObdBenchmarkEngine {
 
                 ObdProfile.LOTUS_ABS -> {
                     log("Inizializzazione ECU ABS Lotus (Sequenza inderogabile: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5)...")
-                    var detectedVersion = ""
-                    for ((index, command) in BenchmarkPolicy.lotusCommands.withIndex()) {
-                        val result = sendInitCmd(command, if (index == 0) 3000L else timeoutMs)
+                    val atzRes = sendInitCmd("AT Z\r", 3000L)
+                    kotlinx.coroutines.delay(800)
+                    clearBuffer()
 
-                        if (index == 0) {
-                            detectedVersion = result.cleanResponse
-                            kotlinx.coroutines.delay(800)
-                            clearBuffer()
-                        }
-                    }
-                    elmVersion = detectedVersion
+                    elmVersion = if (atzRes.cleanResponse.isNotBlank()) atzRes.cleanResponse else "ELM327"
+
+                    val resL1 = sendInitCmd("AT L1\r")
+                    if (!verifyInitResp("AT L1", resL1)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT L1")
+
+                    val resSH = sendInitCmd("AT SH 812BF1\r")
+                    if (!verifyInitResp("AT SH 812BF1", resSH)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SH 812BF1")
+
+                    val resWM = sendInitCmd("AT WM 812BF13E\r")
+                    if (!verifyInitResp("AT WM 812BF13E", resWM)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT WM 812BF13E")
+
+                    val resSP = sendInitCmd("AT SP 5\r")
+                    if (!verifyInitResp("AT SP 5", resSP)) throw Exception("Inizializzazione Lotus ABS fallita al comando AT SP 5")
+
                     protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
                 }
             }
@@ -274,141 +305,133 @@ class ObdBenchmarkEngine {
             var warmupSuccesses = 0
 
             for (w in 1..warmupCount) {
-                if (!isRunning) throw CancellationException("Sessione interrotta")
+                if (!isRunning) break
                 coroutineContext.ensureActive()
 
                 val warmupSample = executeCommandTimed(
                     sampleIndex = -w,
+                    testName = "Warmup",
                     profile = obdProfile,
-                    command = targetCommand,
+                    command = "ATI\r",
                     previousT0Nanos = 0L,
                     timeoutMs = timeoutMs
                 )
 
-                if (w == 1) {
-                    warmupFirstLatency = warmupSample.totalRoundTripMs
-                }
-
-                if (warmupSample.isSuccess) {
-                    warmupSuccesses++
-                }
-
-                log("[WARMUP $w/$warmupCount] Status: ${warmupSample.status.name} | Latenza: ${String.format(Locale.US, "%.1f", warmupSample.totalRoundTripMs)}ms")
+                if (w == 1) warmupFirstLatency = warmupSample.totalRoundTripMs
+                if (warmupSample.isSuccess) warmupSuccesses++
             }
 
-            val isWarmupSuccess = BenchmarkPolicy.warmupPassed(warmupCount, warmupSuccesses)
             metrics = metrics.copy(
                 warmupFirstLatencyMs = warmupFirstLatency,
-                isWarmupSuccess = isWarmupSuccess
+                isWarmupSuccess = (warmupSuccesses > 0)
             )
             onMetricsUpdate(metrics)
 
-            if (!isWarmupSuccess) {
-                throw IllegalStateException("Riscaldamento fallito: nessuna risposta valida. Verificare collegamento e supporto del comando ${targetCommand.trim()}.")
-            }
-
             coroutineContext.ensureActive()
 
-            // FASE MISURATA DEL BENCHMARK (ISOLATA DAI TEMPI PRECEDENTI)
-            log("=== INIZIO FASE MISURATA [${obdProfile.label}] ($targetRequestCount richieste - Comando: $targetCommand) ===")
-            onStatusUpdate(
-                BenchmarkStatus.RunningTest(0, targetRequestCount, 0.0, 0.0),
-                "Avvio misura ($targetRequestCount richieste)..."
-            )
+            // ESECUZIONE SEQUENZA AUTOMATICA DEI 6 TEST
+            val testStartNanos = SystemClock.elapsedRealtimeNanos()
+            val activeTestSequence = if (obdProfile == ObdProfile.AT_ONLY) {
+                listOf(BenchmarkTestDefinition("1. Identificazione ELM", "ATI\r", targetRequestCount))
+            } else {
+                testSequence
+            }
 
-            measurementClock.start()
-            var lastT0Nanos = 0L
-            var lastUiUpdateMs = SystemClock.elapsedRealtime()
-
-            for (i in 1..targetRequestCount) {
-                if (!isRunning || currentSessionId != activeSessionId) throw CancellationException("Sessione interrotta")
+            for ((testIdx, testDef) in activeTestSequence.withIndex()) {
+                if (!isRunning || currentSessionId != activeSessionId) break
                 coroutineContext.ensureActive()
 
-                val sample = executeCommandTimed(
-                    sampleIndex = i,
-                    profile = obdProfile,
-                    command = targetCommand,
-                    previousT0Nanos = lastT0Nanos,
-                    timeoutMs = timeoutMs
-                )
-
-                lastT0Nanos = sample.t0Nanos
-                samples.add(sample)
-
-                totalRawBytesReceived += sample.rawResponse.length
-                if (sample.isSuccess) {
-                    totalAppBytesReceived += sample.parsedResponse.length
+                if (testDef.requiresAuthorization && !isAbsPumpOffAuthorized) {
+                    log("TEST SKIPPED: ${testDef.name} - Autorizzazione non concessa o non verificata.", isError = false)
+                    testSummaries.add(
+                        SingleTestSummary(
+                            testName = testDef.name,
+                            commandSent = testDef.command.trim(),
+                            samplesRequested = 1,
+                            samplesExecuted = 0,
+                            positiveResponses = 0,
+                            negativeResponses = 0,
+                            timeouts = 0,
+                            adapterErrors = 0,
+                            minLatencyMs = 0.0,
+                            avgLatencyMs = 0.0,
+                            maxLatencyMs = 0.0,
+                            p50Ms = 0.0,
+                            p95Ms = 0.0,
+                            p99Ms = 0.0,
+                            stdDevMs = 0.0,
+                            jitterMs = 0.0,
+                            avgInterRequestIntervalMs = 0.0,
+                            commandsPerSecond = 0.0,
+                            percentUnder30ms = 0.0,
+                            percentUnder40ms = 0.0,
+                            isSingleExecution = true,
+                            singleExecutionResult = "NOT_VERIFIED / SKIPPED"
+                        )
+                    )
+                    continue
                 }
 
-                val nowMs = SystemClock.elapsedRealtime()
-                val elapsedSec = (measurementClock.elapsedMs() / 1000.0).coerceAtLeast(0.001)
-                val currentPidsPerSec = samples.count { it.isSuccess } / elapsedSec
+                log("=== AVBIO TEST ${testIdx + 1}/${activeTestSequence.size}: ${testDef.name} (${testDef.command.trim()}) ===")
+                val testSamples = mutableListOf<CommandTimingSample>()
+                var lastT0Nanos = 0L
 
-                if (nowMs - lastUiUpdateMs > 250 || i == targetRequestCount) {
-                    lastUiUpdateMs = nowMs
-                    val currentDurationMs = measurementClock.elapsedMs()
-                    val updatedMetrics = calculateMetrics(
-                        baseMetrics = metrics,
-                        samples = samples,
-                        totalDurationMs = currentDurationMs,
-                        totalRawBytesReceived = totalRawBytesReceived,
-                        totalAppBytesReceived = totalAppBytesReceived,
-                        isPartial = false
+                val targetReps = if (testDef.isSingleExecution) 1 else testDef.repetitions
+
+                for (rep in 1..targetReps) {
+                    if (!isRunning || currentSessionId != activeSessionId) break
+                    coroutineContext.ensureActive()
+
+                    val sample = executeCommandTimed(
+                        sampleIndex = allSamples.size + 1,
+                        testName = testDef.name,
+                        profile = obdProfile,
+                        command = testDef.command,
+                        previousT0Nanos = lastT0Nanos,
+                        timeoutMs = timeoutMs
                     )
-                    metrics = updatedMetrics
-                    onMetricsUpdate(metrics)
+
+                    lastT0Nanos = sample.t0Nanos
+                    testSamples.add(sample)
+                    allSamples.add(sample)
+
+                    val elapsedSec = ((SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000_000.0).coerceAtLeast(0.001)
+                    val currentPidsPerSec = allSamples.count { it.isSuccess } / elapsedSec
 
                     onStatusUpdate(
-                        BenchmarkStatus.RunningTest(
-                            completedRequests = i,
-                            targetRequests = targetRequestCount,
+                        BenchmarkStatus.RunningTestSequence(
+                            currentTestIndex = testIdx + 1,
+                            totalTests = activeTestSequence.size,
+                            testName = testDef.name,
+                            completedRequests = rep,
+                            targetRequests = targetReps,
                             currentPidsPerSec = currentPidsPerSec,
                             lastLatencyMs = sample.totalRoundTripMs
                         ),
-                        "Progresso: $i/$targetRequestCount [SUCCESS: ${metrics.successCount}, ERR: ${metrics.ecuErrorCount + metrics.adapterErrorCount + metrics.timeoutCount}] (${String.format(Locale.US, "%.1f", currentPidsPerSec)} ${metrics.speedUnitLabel} - Latenza: ${String.format(Locale.US, "%.1f", sample.totalRoundTripMs)} ms)"
+                        "Test ${testIdx + 1}/${activeTestSequence.size}: ${testDef.name} [$rep/$targetReps] - Status: ${sample.status.name} (${String.format(Locale.US, "%.1f", sample.totalRoundTripMs)} ms)"
                     )
                 }
+
+                val summary = calculateSingleTestSummary(testDef, testSamples)
+                testSummaries.add(summary)
+
+                val currentDurationMs = (SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000L
+                metrics = calculateAggregateMetrics(metrics, allSamples, testSummaries, currentDurationMs, isPartial = false)
+                onMetricsUpdate(metrics)
             }
 
-            coroutineContext.ensureActive()
-            if (!isRunning) throw CancellationException("Sessione interrotta")
-            val finalMeasuredDurationMs = measurementClock.elapsedMs()
-            metrics = calculateMetrics(
-                baseMetrics = metrics,
-                samples = samples,
-                totalDurationMs = finalMeasuredDurationMs,
-                totalRawBytesReceived = totalRawBytesReceived,
-                totalAppBytesReceived = totalAppBytesReceived,
-                isPartial = false
-            )
+            val finalMeasuredDurationMs = (SystemClock.elapsedRealtimeNanos() - testStartNanos) / 1_000_000L
+            metrics = calculateAggregateMetrics(metrics, allSamples, testSummaries, finalMeasuredDurationMs, isPartial = false)
 
             log("=== BENCHMARK COMPLETATO ===")
-            log("Risultati per ${metrics.deviceName} (${obdProfile.label}):")
-            log(" - Durata Fase Misurata: ${metrics.testDurationMs} ms")
-            log(" - Riscaldamento: 1° Latenza: ${String.format(Locale.US, "%.1f", metrics.warmupFirstLatencyMs)} ms | Esito: ${if (metrics.isWarmupSuccess) "OK" else "FALLITO"}")
-            log(" - Trasporto: ${metrics.effectiveTransport.label}")
-            log(" - Firmware: ${metrics.elmVersion}")
-            log(" - Campioni: SUCCESS: ${metrics.successCount}/${metrics.totalCommandsSent} (${String.format(Locale.US, "%.1f", metrics.successRatePercent)}%) | ECU_ERR: ${metrics.ecuErrorCount} | ADAPTER_ERR: ${metrics.adapterErrorCount} | TIMEOUT: ${metrics.timeoutCount} | INCOMPLETE: ${metrics.incompleteCount}")
-            log(" - Latenza Min: ${String.format(Locale.US, "%.2f", metrics.minLatencyMs)} ms | Media: ${String.format(Locale.US, "%.2f", metrics.avgLatencyMs)} ms | Max: ${String.format(Locale.US, "%.2f", metrics.maxLatencyMs)} ms")
-            log(" - Percentili (sui successi): P50: ${String.format(Locale.US, "%.2f", metrics.p50Ms)} ms | P95: ${String.format(Locale.US, "%.2f", metrics.p95Ms)} ms | P99: ${String.format(Locale.US, "%.2f", metrics.p99Ms)} ms")
-            log(" - Stabilità: StdDev: ${String.format(Locale.US, "%.2f", metrics.stdDevMs)} ms | Jitter: ${String.format(Locale.US, "%.2f", metrics.jitterMs)} ms")
-            log(" - Throughput: App: ${String.format(Locale.US, "%.1f", metrics.appBytesPerSecond)} B/s | Grezzo: ${String.format(Locale.US, "%.1f", metrics.rawBytesPerSecond)} B/s")
-
             onMetricsUpdate(metrics)
             onStatusUpdate(BenchmarkStatus.Completed, "Benchmark metrologico completato!")
 
             metrics
         } catch (e: CancellationException) {
             log("Benchmark annullato dall'utente.", isError = false)
-            val currentDurationMs = measurementClock.elapsedMs()
-            val partialMetrics = calculateMetrics(
-                baseMetrics = metrics,
-                samples = samples,
-                totalDurationMs = currentDurationMs,
-                totalRawBytesReceived = totalRawBytesReceived,
-                totalAppBytesReceived = totalAppBytesReceived,
-                isPartial = true
-            )
+            val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
+            val partialMetrics = calculateAggregateMetrics(metrics, allSamples, testSummaries, currentDurationMs, isPartial = true)
             onMetricsUpdate(partialMetrics)
             onStatusUpdate(BenchmarkStatus.Cancelled, "Benchmark interrotto dall'utente.")
             throw e
@@ -416,15 +439,8 @@ class ObdBenchmarkEngine {
             val errLog = "ERRORE APPLICATIVO CRITICO: ${e.javaClass.simpleName} - ${e.message}\n${Log.getStackTraceString(e)}"
             log(errLog, isError = true)
 
-            val currentDurationMs = measurementClock.elapsedMs()
-            val partialMetrics = calculateMetrics(
-                baseMetrics = metrics,
-                samples = samples,
-                totalDurationMs = currentDurationMs,
-                totalRawBytesReceived = totalRawBytesReceived,
-                totalAppBytesReceived = totalAppBytesReceived,
-                isPartial = true
-            )
+            val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
+            val partialMetrics = calculateAggregateMetrics(metrics, allSamples, testSummaries, currentDurationMs, isPartial = true)
             onMetricsUpdate(partialMetrics)
             onStatusUpdate(BenchmarkStatus.Error(e.message ?: "Errore di comunicazione"), "Errore: ${e.message}")
             throw e
@@ -435,37 +451,39 @@ class ObdBenchmarkEngine {
 
     private fun executeCommandTimed(
         sampleIndex: Int,
+        testName: String,
         profile: ObdProfile,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
     ): CommandTimingSample {
         return if (isBleMode) {
-            executeCommandTimedBle(sampleIndex, profile, command, previousT0Nanos, timeoutMs)
+            executeCommandTimedBle(sampleIndex, testName, profile, command, previousT0Nanos, timeoutMs)
         } else {
-            executeCommandTimedClassic(sampleIndex, profile, command, previousT0Nanos, timeoutMs)
+            executeCommandTimedClassic(sampleIndex, testName, profile, command, previousT0Nanos, timeoutMs)
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun executeCommandTimedBle(
         sampleIndex: Int,
+        testName: String,
         profile: ObdProfile,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
     ): CommandTimingSample {
-        val gatt = bluetoothGatt ?: return createFailedSample(sampleIndex, command, previousT0Nanos)
-        val rxChar = rxCharacteristic ?: return createFailedSample(sampleIndex, command, previousT0Nanos)
+        val gatt = bluetoothGatt ?: return createFailedSample(sampleIndex, testName, command, previousT0Nanos)
+        val rxChar = rxCharacteristic ?: return createFailedSample(sampleIndex, testName, command, previousT0Nanos)
 
         synchronized(bleLock) {
             bleResponseBuffer.clear()
             bleFirstByteTimestampNanos = 0L
+            blePayloadTimestampNanos = 0L
             blePromptTimestampNanos = 0L
         }
 
         val commandBytes = command.toByteArray(Charsets.US_ASCII)
-
         val t0Nanos = SystemClock.elapsedRealtimeNanos()
 
         val writeType = if ((rxChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
@@ -487,12 +505,9 @@ class ObdBenchmarkEngine {
 
         val t1Nanos = SystemClock.elapsedRealtimeNanos()
 
-        if (!writeSuccess) {
-            log("Scrittura caratteristica BLE fallita per comando $command", isError = true)
-        }
-
         val timeoutNanos = timeoutMs * 1_000_000L
         var t2Nanos = 0L
+        var tPayloadNanos = 0L
         var t3Nanos = 0L
         var rawResponse = ""
 
@@ -504,6 +519,7 @@ class ObdBenchmarkEngine {
                 }
                 if (bleResponseBuffer.contains(">")) {
                     t3Nanos = if (blePromptTimestampNanos > 0L) blePromptTimestampNanos else SystemClock.elapsedRealtimeNanos()
+                    tPayloadNanos = if (blePayloadTimestampNanos > 0L) blePayloadTimestampNanos else t3Nanos
                     rawResponse = bleResponseBuffer.toString()
                 }
             }
@@ -528,61 +544,63 @@ class ObdBenchmarkEngine {
             bytesReceived = rawResponse.length
         )
 
-        if (parseResult.status == SampleStatus.TIMEOUT || parseResult.status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
-            resyncStreamBle()
-        }
-
-        val isSuccess = (parseResult.status == SampleStatus.SUCCESS)
-        val isTimeout = (parseResult.status == SampleStatus.TIMEOUT)
-
         val writeDurationMs = (t1Nanos - t0Nanos) / 1_000_000.0
         val timeToFirstByteMs = if (t2Nanos > 0) (t2Nanos - t1Nanos) / 1_000_000.0 else 0.0
+        val payloadRxDurationMs = if (t2Nanos > 0 && tPayloadNanos > 0) (tPayloadNanos - t2Nanos) / 1_000_000.0 else 0.0
+        val promptDelayMs = if (tPayloadNanos > 0 && t3Nanos > 0) (t3Nanos - tPayloadNanos) / 1_000_000.0 else 0.0
         val rxDurationMs = if (t2Nanos > 0) (t3Nanos - t2Nanos) / 1_000_000.0 else 0.0
         val totalRoundTripMs = (t3Nanos - t0Nanos) / 1_000_000.0
         val interRequestIntervalMs = if (previousT0Nanos > 0) (t0Nanos - previousT0Nanos) / 1_000_000.0 else 0.0
 
+        val isSuccess = parseResult.status == SampleStatus.POSITIVE_RESPONSE || parseResult.status == SampleStatus.SUCCESS
+
         return CommandTimingSample(
             sampleIndex = sampleIndex,
+            testName = testName,
             t0Nanos = t0Nanos,
             t1Nanos = t1Nanos,
             t2Nanos = if (t2Nanos > 0) t2Nanos else t3Nanos,
+            tPayloadNanos = if (tPayloadNanos > 0) tPayloadNanos else t3Nanos,
             t3Nanos = t3Nanos,
             writeDurationMs = writeDurationMs,
             timeToFirstByteMs = timeToFirstByteMs,
+            payloadRxDurationMs = payloadRxDurationMs,
+            promptDelayMs = promptDelayMs,
             rxDurationMs = rxDurationMs,
             totalRoundTripMs = totalRoundTripMs,
             interRequestIntervalMs = interRequestIntervalMs,
             status = parseResult.status,
             isSuccess = isSuccess,
-            isTimeout = isTimeout,
+            isTimeout = parseResult.status == SampleStatus.TIMEOUT,
             commandSent = command.trim(),
             rawResponse = parseResult.cleanedResponse,
-            parsedResponse = parseResult.extractedPayload
+            parsedResponse = parseResult.extractedPayload,
+            serviceId = parseResult.serviceId,
+            nrcCode = parseResult.nrcCode
         )
     }
 
     private fun executeCommandTimedClassic(
         sampleIndex: Int,
+        testName: String,
         profile: ObdProfile,
         command: String,
         previousT0Nanos: Long,
         timeoutMs: Long
     ): CommandTimingSample {
-        val out = outputStream ?: return createFailedSample(sampleIndex, command, previousT0Nanos)
-        val input = inputStream ?: return createFailedSample(sampleIndex, command, previousT0Nanos)
+        val out = outputStream ?: return createFailedSample(sampleIndex, testName, command, previousT0Nanos)
+        val input = inputStream ?: return createFailedSample(sampleIndex, testName, command, previousT0Nanos)
 
         clearBuffer()
-
         val commandBytes = command.toByteArray(Charsets.US_ASCII)
 
         val t0Nanos = SystemClock.elapsedRealtimeNanos()
-
         out.write(commandBytes)
         out.flush()
-
         val t1Nanos = SystemClock.elapsedRealtimeNanos()
 
         var t2Nanos = 0L
+        var tPayloadNanos = 0L
         var t3Nanos = 0L
         var totalBytesRead = 0
 
@@ -605,8 +623,14 @@ class ObdBenchmarkEngine {
                         val text = String(buffer, 0, bytesRead, Charsets.US_ASCII)
                         responseBuilder.append(text)
 
+                        // Tracciamento grano-fine per isolare il ritardo di ~202 ms
+                        if (!text.contains(">") && tPayloadNanos == 0L) {
+                            tPayloadNanos = nowNanos
+                        }
+
                         if (responseBuilder.contains(">")) {
                             t3Nanos = nowNanos
+                            if (tPayloadNanos == 0L) tPayloadNanos = nowNanos
                             break
                         }
                     }
@@ -634,94 +658,45 @@ class ObdBenchmarkEngine {
             bytesReceived = totalBytesRead
         )
 
-        if (parseResult.status == SampleStatus.TIMEOUT || parseResult.status == SampleStatus.INCOMPLETE_RESPONSE || !hasPrompt) {
-            resyncStreamClassic()
-        }
-
-        val isSuccess = (parseResult.status == SampleStatus.SUCCESS)
-        val isTimeout = (parseResult.status == SampleStatus.TIMEOUT)
-
         val writeDurationMs = (t1Nanos - t0Nanos) / 1_000_000.0
         val timeToFirstByteMs = if (t2Nanos > 0) (t2Nanos - t1Nanos) / 1_000_000.0 else 0.0
+        val payloadRxDurationMs = if (t2Nanos > 0 && tPayloadNanos > 0) (tPayloadNanos - t2Nanos) / 1_000_000.0 else 0.0
+        val promptDelayMs = if (tPayloadNanos > 0 && t3Nanos > 0) (t3Nanos - tPayloadNanos) / 1_000_000.0 else 0.0
         val rxDurationMs = if (t2Nanos > 0) (t3Nanos - t2Nanos) / 1_000_000.0 else 0.0
         val totalRoundTripMs = (t3Nanos - t0Nanos) / 1_000_000.0
         val interRequestIntervalMs = if (previousT0Nanos > 0) (t0Nanos - previousT0Nanos) / 1_000_000.0 else 0.0
 
+        val isSuccess = parseResult.status == SampleStatus.POSITIVE_RESPONSE || parseResult.status == SampleStatus.SUCCESS
+
         return CommandTimingSample(
             sampleIndex = sampleIndex,
+            testName = testName,
             t0Nanos = t0Nanos,
             t1Nanos = t1Nanos,
             t2Nanos = if (t2Nanos > 0) t2Nanos else t3Nanos,
+            tPayloadNanos = if (tPayloadNanos > 0) tPayloadNanos else t3Nanos,
             t3Nanos = t3Nanos,
             writeDurationMs = writeDurationMs,
             timeToFirstByteMs = timeToFirstByteMs,
+            payloadRxDurationMs = payloadRxDurationMs,
+            promptDelayMs = promptDelayMs,
             rxDurationMs = rxDurationMs,
             totalRoundTripMs = totalRoundTripMs,
             interRequestIntervalMs = interRequestIntervalMs,
             status = parseResult.status,
             isSuccess = isSuccess,
-            isTimeout = isTimeout,
+            isTimeout = parseResult.status == SampleStatus.TIMEOUT,
             commandSent = command.trim(),
             rawResponse = parseResult.cleanedResponse,
-            parsedResponse = parseResult.extractedPayload
+            parsedResponse = parseResult.extractedPayload,
+            serviceId = parseResult.serviceId,
+            nrcCode = parseResult.nrcCode
         )
-    }
-
-    private fun resyncStreamClassic() {
-        val out = outputStream ?: return
-        val input = inputStream ?: return
-        try {
-            out.write("\r".toByteArray(Charsets.US_ASCII))
-            out.flush()
-
-            val startNanos = SystemClock.elapsedRealtimeNanos()
-            val buffer = ByteArray(READ_BUFFER_SIZE)
-            while (isRunning && (SystemClock.elapsedRealtimeNanos() - startNanos) < 150_000_000L) {
-                if (input.available() > 0) {
-                    input.read(buffer)
-                } else {
-                    Thread.sleep(10)
-                }
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun resyncStreamBle() {
-        val gatt = bluetoothGatt ?: return
-        val rxChar = rxCharacteristic ?: return
-        try {
-            val commandBytes = "\r".toByteArray(Charsets.US_ASCII)
-            val writeType = if ((rxChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            } else {
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(rxChar, commandBytes, writeType)
-            } else {
-                @Suppress("DEPRECATION")
-                rxChar.value = commandBytes
-                @Suppress("DEPRECATION")
-                rxChar.writeType = writeType
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(rxChar)
-            }
-
-            Thread.sleep(150)
-            synchronized(bleLock) {
-                bleResponseBuffer.clear()
-                bleFirstByteTimestampNanos = 0L
-                blePromptTimestampNanos = 0L
-            }
-        } catch (_: Exception) {
-        }
     }
 
     private fun createFailedSample(
         sampleIndex: Int,
+        testName: String,
         command: String,
         previousT0Nanos: Long
     ): CommandTimingSample {
@@ -729,12 +704,16 @@ class ObdBenchmarkEngine {
         val interval = if (previousT0Nanos > 0) (now - previousT0Nanos) / 1_000_000.0 else 0.0
         return CommandTimingSample(
             sampleIndex = sampleIndex,
+            testName = testName,
             t0Nanos = now,
             t1Nanos = now,
             t2Nanos = now,
+            tPayloadNanos = now,
             t3Nanos = now,
             writeDurationMs = 0.0,
             timeToFirstByteMs = 0.0,
+            payloadRxDurationMs = 0.0,
+            promptDelayMs = 0.0,
             rxDurationMs = 0.0,
             totalRoundTripMs = 0.0,
             interRequestIntervalMs = interval,
@@ -746,62 +725,90 @@ class ObdBenchmarkEngine {
         )
     }
 
-    private fun calculateMetrics(
-        baseMetrics: BenchmarkMetrics,
-        samples: List<CommandTimingSample>,
-        totalDurationMs: Long,
-        totalRawBytesReceived: Long,
-        totalAppBytesReceived: Long,
-        isPartial: Boolean
-    ): BenchmarkMetrics {
-        if (samples.isEmpty()) return baseMetrics.copy(isPartialSession = isPartial)
+    private fun calculateSingleTestSummary(
+        testDef: BenchmarkTestDefinition,
+        samples: List<CommandTimingSample>
+    ): SingleTestSummary {
+        if (samples.isEmpty()) {
+            return SingleTestSummary(
+                testName = testDef.name,
+                commandSent = testDef.command.trim(),
+                samplesRequested = testDef.repetitions,
+                samplesExecuted = 0,
+                positiveResponses = 0,
+                negativeResponses = 0,
+                timeouts = 0,
+                adapterErrors = 0,
+                minLatencyMs = 0.0,
+                avgLatencyMs = 0.0,
+                maxLatencyMs = 0.0,
+                p50Ms = 0.0,
+                p95Ms = 0.0,
+                p99Ms = 0.0,
+                stdDevMs = 0.0,
+                jitterMs = 0.0,
+                avgInterRequestIntervalMs = 0.0,
+                commandsPerSecond = 0.0,
+                percentUnder30ms = 0.0,
+                percentUnder40ms = 0.0,
+                isSingleExecution = testDef.isSingleExecution,
+                singleExecutionResult = "NON ESEGUITO"
+            )
+        }
 
-        val successCount = samples.count { it.status == SampleStatus.SUCCESS }
-        val ecuErrorCount = samples.count { it.status == SampleStatus.ECU_ERROR }
-        val adapterErrorCount = samples.count { it.status == SampleStatus.ADAPTER_ERROR }
+        val positiveCount = samples.count { it.status == SampleStatus.POSITIVE_RESPONSE || it.status == SampleStatus.SUCCESS }
+        val negativeCount = samples.count { it.status == SampleStatus.NEGATIVE_RESPONSE }
         val timeoutCount = samples.count { it.status == SampleStatus.TIMEOUT }
-        val incompleteCount = samples.count { it.status == SampleStatus.INCOMPLETE_RESPONSE }
+        val adapterCount = samples.count { it.status == SampleStatus.ADAPTER_ERROR || it.status == SampleStatus.TRANSPORT_ERROR }
 
-        val successfulSamples = samples.filter { it.status == SampleStatus.SUCCESS }
-        val latencies = successfulSamples.map { it.totalRoundTripMs }
-        val minLatency = latencies.minOrNull() ?: 0.0
-        val maxLatency = latencies.maxOrNull() ?: 0.0
-        val avgLatency = if (latencies.isNotEmpty()) latencies.average() else 0.0
+        val positiveLatencies = samples.filter { it.status == SampleStatus.POSITIVE_RESPONSE || it.status == SampleStatus.SUCCESS }.map { it.totalRoundTripMs }
+        val minLatency = positiveLatencies.minOrNull() ?: 0.0
+        val maxLatency = positiveLatencies.maxOrNull() ?: 0.0
+        val avgLatency = if (positiveLatencies.isNotEmpty()) positiveLatencies.average() else 0.0
 
-        val sortedLatencies = latencies.sorted()
-        val p50 = getPercentile(sortedLatencies, 50.0)
-        val p95 = getPercentile(sortedLatencies, 95.0)
-        val p99 = getPercentile(sortedLatencies, 99.0)
+        val sorted = positiveLatencies.sorted()
+        val p50 = getPercentile(sorted, 50.0)
+        val p95 = getPercentile(sorted, 95.0)
+        val p99 = getPercentile(sorted, 99.0)
 
-        val stdDev = if (latencies.size > 1) {
+        val stdDev = if (positiveLatencies.size > 1) {
             val mean = avgLatency
-            val sumOfSquaredDiffs = latencies.sumOf { (it - mean) * (it - mean) }
-            sqrt(sumOfSquaredDiffs / latencies.size)
+            sqrt(positiveLatencies.sumOf { (it - mean) * (it - mean) } / positiveLatencies.size)
         } else 0.0
 
-        val jitter = if (latencies.size > 1) {
+        val jitter = if (positiveLatencies.size > 1) {
             var diffSum = 0.0
-            for (i in 0 until latencies.size - 1) {
-                diffSum += kotlin.math.abs(latencies[i + 1] - latencies[i])
+            for (i in 0 until positiveLatencies.size - 1) {
+                diffSum += kotlin.math.abs(positiveLatencies[i + 1] - positiveLatencies[i])
             }
-            diffSum / (latencies.size - 1)
+            diffSum / (positiveLatencies.size - 1)
         } else 0.0
 
         val intervals = samples.drop(1).map { it.interRequestIntervalMs }.filter { it > 0 }
         val avgInterval = if (intervals.isNotEmpty()) intervals.average() else 0.0
 
-        val totalSec = (totalDurationMs / 1000.0).coerceAtLeast(0.001)
-        val pidsPerSec = successCount / totalSec
-        val appBytesPerSec = totalAppBytesReceived / totalSec
-        val rawBytesPerSec = totalRawBytesReceived / totalSec
+        val countUnder30 = intervals.count { it <= 30.0 }
+        val countUnder40 = intervals.count { it <= 40.0 }
+        val percentUnder30 = if (intervals.isNotEmpty()) (countUnder30.toDouble() / intervals.size) * 100.0 else 0.0
+        val percentUnder40 = if (intervals.isNotEmpty()) (countUnder40.toDouble() / intervals.size) * 100.0 else 0.0
 
-        return baseMetrics.copy(
-            totalCommandsSent = samples.size,
-            successCount = successCount,
-            ecuErrorCount = ecuErrorCount,
-            adapterErrorCount = adapterErrorCount,
-            timeoutCount = timeoutCount,
-            incompleteCount = incompleteCount,
+        val totalTimeSec = (samples.map { it.totalRoundTripMs }.sum() / 1000.0).coerceAtLeast(0.001)
+        val pidsPerSec = positiveCount / totalTimeSec
+
+        val singleResText = if (testDef.isSingleExecution) {
+            val first = samples.first()
+            "Status: ${first.status.name} | RTT: ${String.format(Locale.US, "%.1f", first.totalRoundTripMs)} ms | Resp: ${first.rawResponse}"
+        } else ""
+
+        return SingleTestSummary(
+            testName = testDef.name,
+            commandSent = testDef.command.trim(),
+            samplesRequested = testDef.repetitions,
+            samplesExecuted = samples.size,
+            positiveResponses = positiveCount,
+            negativeResponses = negativeCount,
+            timeouts = timeoutCount,
+            adapterErrors = adapterCount,
             minLatencyMs = minLatency,
             avgLatencyMs = avgLatency,
             maxLatencyMs = maxLatency,
@@ -812,12 +819,76 @@ class ObdBenchmarkEngine {
             jitterMs = jitter,
             avgInterRequestIntervalMs = avgInterval,
             commandsPerSecond = pidsPerSec,
-            appBytesPerSecond = appBytesPerSec,
-            rawBytesPerSecond = rawBytesPerSec,
+            percentUnder30ms = percentUnder30,
+            percentUnder40ms = percentUnder40,
+            isSingleExecution = testDef.isSingleExecution,
+            singleExecutionResult = singleResText
+        )
+    }
+
+    private fun calculateAggregateMetrics(
+        baseMetrics: BenchmarkMetrics,
+        allSamples: List<CommandTimingSample>,
+        testSummaries: List<SingleTestSummary>,
+        totalDurationMs: Long,
+        isPartial: Boolean
+    ): BenchmarkMetrics {
+        if (allSamples.isEmpty()) return baseMetrics.copy(isPartialSession = isPartial)
+
+        val positiveCount = allSamples.count { it.status == SampleStatus.POSITIVE_RESPONSE || it.status == SampleStatus.SUCCESS }
+        val negativeCount = allSamples.count { it.status == SampleStatus.NEGATIVE_RESPONSE }
+        val adapterCount = allSamples.count { it.status == SampleStatus.ADAPTER_ERROR || it.status == SampleStatus.TRANSPORT_ERROR }
+        val timeoutCount = allSamples.count { it.status == SampleStatus.TIMEOUT }
+        val incompleteCount = allSamples.count { it.status == SampleStatus.INCOMPLETE_RESPONSE }
+
+        val positiveSamples = allSamples.filter { it.status == SampleStatus.POSITIVE_RESPONSE || it.status == SampleStatus.SUCCESS }
+        val latencies = positiveSamples.map { it.totalRoundTripMs }
+        val minLatency = latencies.minOrNull() ?: 0.0
+        val maxLatency = latencies.maxOrNull() ?: 0.0
+        val avgLatency = if (latencies.isNotEmpty()) latencies.average() else 0.0
+
+        val sorted = latencies.sorted()
+        val p50 = getPercentile(sorted, 50.0)
+        val p95 = getPercentile(sorted, 95.0)
+        val p99 = getPercentile(sorted, 99.0)
+
+        val stdDev = if (latencies.size > 1) {
+            val mean = avgLatency
+            sqrt(latencies.sumOf { (it - mean) * (it - mean) } / latencies.size)
+        } else 0.0
+
+        val jitter = if (latencies.size > 1) {
+            var diffSum = 0.0
+            for (i in 0 until latencies.size - 1) {
+                diffSum += kotlin.math.abs(latencies[i + 1] - latencies[i])
+            }
+            diffSum / (latencies.size - 1)
+        } else 0.0
+
+        val totalSec = (totalDurationMs / 1000.0).coerceAtLeast(0.001)
+        val pidsPerSec = positiveCount / totalSec
+
+        return baseMetrics.copy(
+            totalCommandsSent = allSamples.size,
+            successCount = positiveCount,
+            ecuErrorCount = negativeCount,
+            adapterErrorCount = adapterCount,
+            timeoutCount = timeoutCount,
+            incompleteCount = incompleteCount,
+            minLatencyMs = minLatency,
+            avgLatencyMs = avgLatency,
+            maxLatencyMs = maxLatency,
+            p50Ms = p50,
+            p95Ms = p95,
+            p99Ms = p99,
+            stdDevMs = stdDev,
+            jitterMs = jitter,
+            commandsPerSecond = pidsPerSec,
             testDurationMs = totalDurationMs,
             isPartialSession = isPartial,
+            testSummaries = testSummaries,
             sessionLogs = _logs.value,
-            rawSamples = samples.toList()
+            rawSamples = allSamples.toList()
         )
     }
 
@@ -1169,8 +1240,14 @@ class ObdBenchmarkEngine {
                 bleFirstByteTimestampNanos = nowNanos
             }
             bleResponseBuffer.append(text)
+
+            if (!text.contains(">") && blePayloadTimestampNanos == 0L) {
+                blePayloadTimestampNanos = nowNanos
+            }
+
             if (text.contains(">") || bleResponseBuffer.contains(">")) {
                 blePromptTimestampNanos = nowNanos
+                if (blePayloadTimestampNanos == 0L) blePayloadTimestampNanos = nowNanos
             }
         }
     }
@@ -1227,41 +1304,54 @@ class ObdBenchmarkEngine {
         }
 
         csvFile.printWriter(Charsets.UTF_8).use { writer ->
-            writer.println("# OBD2 SPEED BENCHMARK METROLOGICO REPORT")
+            writer.println("# OBD2 SPEED BENCHMARK METROLOGICO REPORT - LOTUS EBC430 / KWP2000")
             writer.println("# Data Generazione,${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
             writer.println("# Stato Sessione,${if (metrics.isPartialSession) "INTERROTTA / PARZIALE" else "COMPLETATA"}")
             writer.println("# Dispositivo,${escapeCsvField(metrics.deviceName)}")
             writer.println("# Indirizzo MAC,${metrics.deviceAddress}")
             writer.println("# Trasporto Effettivo,${metrics.effectiveTransport.label}")
             writer.println("# Profilo OBD,${metrics.obdProfile.label}")
-            writer.println("# Comando Misurato,${escapeCsvField(metrics.measuredCommand)}")
             writer.println("# Firmware ELM,${escapeCsvField(metrics.elmVersion)}")
             writer.println("# Protocollo Rilevato,${escapeCsvField(metrics.protocolName)}")
             writer.println("# Timeout Configurato (ms),${metrics.timeoutMs}")
-            writer.println("# Riscaldamento Richieste,${metrics.warmupRequestCount}")
-            writer.println("# Riscaldamento 1° Latenza (ms),${String.format(Locale.US, "%.3f", metrics.warmupFirstLatencyMs)}")
-            writer.println("# Riscaldamento Esito,${if (metrics.isWarmupSuccess) "SUCCESS" else "FALLITO"}")
-            writer.println("# Campioni Target,${metrics.targetRequestCount}")
-            writer.println("# Campioni Effettivi,${metrics.totalCommandsSent}")
-            writer.println("# Risposte SUCCESS,${metrics.successCount}")
-            writer.println("# Errori ECU (ECU_ERROR),${metrics.ecuErrorCount}")
-            writer.println("# Errori Adattatore (ADAPTER_ERROR),${metrics.adapterErrorCount}")
-            writer.println("# Timeout (TIMEOUT),${metrics.timeoutCount}")
-            writer.println("# Risposte Incomplete (INCOMPLETE_RESPONSE),${metrics.incompleteCount}")
-            writer.println("# Tasso di Successo (%),${String.format(Locale.US, "%.1f", metrics.successRatePercent)}")
-            writer.println("# Latenza Min (ms - sui successi),${String.format(Locale.US, "%.3f", metrics.minLatencyMs)}")
-            writer.println("# Latenza Media (ms - sui successi),${String.format(Locale.US, "%.3f", metrics.avgLatencyMs)}")
-            writer.println("# Latenza Max (ms - sui successi),${String.format(Locale.US, "%.3f", metrics.maxLatencyMs)}")
-            writer.println("# Percentile P50 (ms),${String.format(Locale.US, "%.3f", metrics.p50Ms)}")
-            writer.println("# Percentile P95 (ms),${String.format(Locale.US, "%.3f", metrics.p95Ms)}")
-            writer.println("# Percentile P99 (ms),${String.format(Locale.US, "%.3f", metrics.p99Ms)}")
-            writer.println("# Deviazione Standard (ms),${String.format(Locale.US, "%.3f", metrics.stdDevMs)}")
-            writer.println("# Jitter (ms),${String.format(Locale.US, "%.3f", metrics.jitterMs)}")
-            writer.println("# Intervallo Medio Inter-Richiesta (ms),${String.format(Locale.US, "%.3f", metrics.avgInterRequestIntervalMs)}")
-            writer.println("# Velocità (${metrics.speedUnitLabel}),${String.format(Locale.US, "%.2f", metrics.commandsPerSecond)}")
-            writer.println("# Throughput Applicativo (B/s),${String.format(Locale.US, "%.2f", metrics.appBytesPerSecond)}")
-            writer.println("# Throughput Grezzo (B/s),${String.format(Locale.US, "%.2f", metrics.rawBytesPerSecond)}")
-            writer.println("# Durata Fase Misurata (ms),${metrics.testDurationMs}")
+            writer.println("# Campioni Target per Test,${metrics.targetRequestCount}")
+            writer.println("# Autorizzazione ABS Pump OFF,${if (metrics.isAbsPumpOffAuthorized) "CONCESSA" else "NEGATA"}")
+            writer.println("# Totale Transazioni Eseguite,${metrics.totalCommandsSent}")
+            writer.println("# Risposte Positive,${metrics.successCount}")
+            writer.println("# Risposte Negative (NRC),${metrics.ecuErrorCount}")
+            writer.println("# Timeout,${metrics.timeoutCount}")
+            writer.println("# Errori Adattatore/Trasporto,${metrics.adapterErrorCount}")
+            writer.println("# Durata Complessiva Fase Misurata (ms),${metrics.testDurationMs}")
+            writer.println("#")
+            writer.println("# --- RIEPILOGO STATISTICO PER SINGOLO TEST ---")
+            writer.println("Test_Name,Command,Requested,Executed,Positive_Responses,Negative_Responses,Timeouts,Adapter_Errors,Min_ms,Avg_ms,Max_ms,P50_ms,P95_ms,P99_ms,StdDev_ms,Jitter_ms,Avg_InterRequest_ms,Cmd_per_Sec,Percent_under_30ms,Percent_under_40ms,Single_Execution_Result")
+
+            metrics.testSummaries.forEach { s ->
+                writer.println(
+                    "${escapeCsvField(s.testName)}," +
+                            "${s.commandSent}," +
+                            "${s.samplesRequested}," +
+                            "${s.samplesExecuted}," +
+                            "${s.positiveResponses}," +
+                            "${s.negativeResponses}," +
+                            "${s.timeouts}," +
+                            "${s.adapterErrors}," +
+                            "${String.format(Locale.US, "%.3f", s.minLatencyMs)}," +
+                            "${String.format(Locale.US, "%.3f", s.avgLatencyMs)}," +
+                            "${String.format(Locale.US, "%.3f", s.maxLatencyMs)}," +
+                            "${String.format(Locale.US, "%.3f", s.p50Ms)}," +
+                            "${String.format(Locale.US, "%.3f", s.p95Ms)}," +
+                            "${String.format(Locale.US, "%.3f", s.p99Ms)}," +
+                            "${String.format(Locale.US, "%.3f", s.stdDevMs)}," +
+                            "${String.format(Locale.US, "%.3f", s.jitterMs)}," +
+                            "${String.format(Locale.US, "%.3f", s.avgInterRequestIntervalMs)}," +
+                            "${String.format(Locale.US, "%.2f", s.commandsPerSecond)}," +
+                            "${String.format(Locale.US, "%.1f", s.percentUnder30ms)}," +
+                            "${String.format(Locale.US, "%.1f", s.percentUnder40ms)}," +
+                            escapeCsvField(s.singleExecutionResult)
+                )
+            }
+
             writer.println("#")
             writer.println("# --- INIZIALIZZAZIONE AUTOMATICA SCRIPT ---")
             if (metrics.initLog.isNotEmpty()) {
@@ -1282,24 +1372,29 @@ class ObdBenchmarkEngine {
                 writer.println("# SessionLog_001,Nessun log applicativo")
             }
             writer.println("#")
-            writer.println("Sample_Index,t0_elapsed_ns,t1_elapsed_ns,t2_elapsed_ns,t3_elapsed_ns,Write_ms,TTFB_ms,RX_ms,Total_RTT_ms,InterRequest_Interval_ms,Status,Command,RawResponse,ParsedPayload")
+            writer.println("Sample_Index,Test_Name,t0_ns,t1_ns,t2_ns,tPayload_ns,t3_ns,Write_ms,TTFB_ms,PayloadRx_ms,PromptDelay_ms,Total_RTT_ms,InterRequest_Interval_ms,Status,Command,RawResponse,ParsedPayload,ServiceID,NRC_Code")
 
             metrics.rawSamples.forEach { sample ->
                 writer.println(
                     "${sample.sampleIndex}," +
+                            "${escapeCsvField(sample.testName)}," +
                             "${sample.t0Nanos}," +
                             "${sample.t1Nanos}," +
                             "${sample.t2Nanos}," +
+                            "${sample.tPayloadNanos}," +
                             "${sample.t3Nanos}," +
                             "${String.format(Locale.US, "%.3f", sample.writeDurationMs)}," +
                             "${String.format(Locale.US, "%.3f", sample.timeToFirstByteMs)}," +
-                            "${String.format(Locale.US, "%.3f", sample.rxDurationMs)}," +
+                            "${String.format(Locale.US, "%.3f", sample.payloadRxDurationMs)}," +
+                            "${String.format(Locale.US, "%.3f", sample.promptDelayMs)}," +
                             "${String.format(Locale.US, "%.3f", sample.totalRoundTripMs)}," +
                             "${String.format(Locale.US, "%.3f", sample.interRequestIntervalMs)}," +
                             "${sample.status.name}," +
                             "${sample.commandSent}," +
                             "${escapeCsvField(sample.rawResponse)}," +
-                            escapeCsvField(sample.parsedResponse)
+                            "${escapeCsvField(sample.parsedResponse)}," +
+                            "${sample.serviceId}," +
+                            sample.nrcCode
                 )
             }
         }
