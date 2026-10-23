@@ -14,9 +14,9 @@ enum class SampleStatus {
 }
 
 enum class TransportMode(val label: String) {
-    AUTO("Automatico"),
-    CLASSIC_SPP("Bluetooth Classic (SPP)"),
-    BLE_GATT("Bluetooth Low Energy (GATT)")
+    AUTO("AUTO"),
+    CLASSIC_SPP("BT"),
+    BLE_GATT("BT BLE")
 }
 
 enum class ObdProfile(

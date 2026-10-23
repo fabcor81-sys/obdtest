@@ -44,7 +44,6 @@ fun ObdBenchmarkScreen(
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
-    onSelectRequestCount: (Int) -> Unit,
     onToggleAbsPumpOffAuthorization: (Boolean) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
@@ -102,7 +101,7 @@ fun ObdBenchmarkScreen(
             } else if (!uiState.isBluetoothEnabled) {
                 BluetoothDisabledCard(onRefreshDevices = onRefreshDevices)
             } else {
-                // 1. Selettore Dispositivo Bluetooth
+                // 1. Selettore Dispositivo Bluetooth Compattato con Font Ridotto
                 DeviceSelectorCard(
                     devices = uiState.pairedDevices,
                     selectedDevice = uiState.selectedDevice,
@@ -117,24 +116,22 @@ fun ObdBenchmarkScreen(
                             uiState.status !is BenchmarkStatus.Error
                 )
 
-                // 2. Controlli Trasporto, Profilo, Campioni, Autorizzazione Pump OFF e Pulsante Unico Avvio
+                // 2. Controlli Trasporto compatti (AUTO, BT, BT BLE), Profilo, Flag Pompa OFF e Pulsante Unico
                 TestControlCard(
                     status = uiState.status,
                     statusMessage = uiState.statusMessage,
                     selectedTransportMode = uiState.selectedTransportMode,
                     selectedProfile = uiState.selectedProfile,
-                    selectedRequestCount = uiState.selectedRequestCount,
                     isAbsPumpOffAuthorized = uiState.isAbsPumpOffAuthorized,
                     isDeviceSelected = uiState.selectedDevice != null,
                     onSelectTransportMode = onSelectTransportMode,
                     onSelectProfile = onSelectProfile,
-                    onSelectRequestCount = onSelectRequestCount,
                     onToggleAbsPumpOffAuthorization = onToggleAbsPumpOffAuthorization,
                     onStartTest = onStartTest,
                     onStopTest = onStopTest
                 )
 
-                // 3. Scheda Risultati & Riepilogo Sequenza 6 Test
+                // 3. Scheda Risultati & Riepilogo Sequenza Test
                 uiState.currentMetrics?.let { metrics ->
                     CurrentMetricsCard(
                         metrics = metrics,
@@ -267,6 +264,8 @@ fun DeviceSelectorCard(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
+    val selectedText = selectedDevice?.let { "${it.name} (${it.address})" } ?: "Nessun dispositivo selezionato"
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -321,7 +320,7 @@ fun DeviceSelectorCard(
                 onExpandedChange = { if (!isTesting) expanded = !expanded }
             ) {
                 OutlinedTextField(
-                    value = selectedDevice?.name ?: "Nessun dispositivo selezionato",
+                    value = selectedText,
                     onValueChange = {},
                     readOnly = true,
                     enabled = !isTesting,
@@ -330,12 +329,12 @@ fun DeviceSelectorCard(
                         Icon(
                             Icons.Default.Bluetooth,
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(16.dp),
                             tint = RacingYellow
                         )
                     },
                     textStyle = LocalTextStyle.current.copy(
-                        fontSize = 13.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -349,7 +348,7 @@ fun DeviceSelectorCard(
                     modifier = Modifier
                         .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth()
-                        .height(48.dp)
+                        .height(44.dp)
                 )
 
                 ExposedDropdownMenu(
@@ -359,7 +358,7 @@ fun DeviceSelectorCard(
                 ) {
                     if (devices.isEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Nessun dispositivo trovato", color = RacingTextSecondary, fontSize = 12.sp) },
+                            text = { Text("Nessun dispositivo trovato", color = RacingTextSecondary, fontSize = 11.sp) },
                             onClick = {
                                 expanded = false
                                 onRefreshDevices()
@@ -370,10 +369,10 @@ fun DeviceSelectorCard(
                             DropdownMenuItem(
                                 text = {
                                     Column {
-                                        Text(device.name, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = RacingText)
+                                        Text(device.name, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = RacingText)
                                         Text(
                                             device.address,
-                                            fontSize = 10.sp,
+                                            fontSize = 9.sp,
                                             color = RacingTextSecondary
                                         )
                                     }
@@ -386,7 +385,7 @@ fun DeviceSelectorCard(
                                     Icon(
                                         Icons.Default.BluetoothConnected,
                                         contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
+                                        modifier = Modifier.size(14.dp),
                                         tint = RacingYellow
                                     )
                                 }
@@ -405,12 +404,10 @@ fun TestControlCard(
     statusMessage: String,
     selectedTransportMode: TransportMode,
     selectedProfile: ObdProfile,
-    selectedRequestCount: Int,
     isAbsPumpOffAuthorized: Boolean,
     isDeviceSelected: Boolean,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
-    onSelectRequestCount: (Int) -> Unit,
     onToggleAbsPumpOffAuthorization: (Boolean) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit
@@ -430,9 +427,9 @@ fun TestControlCard(
             modifier = Modifier.padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Riga 1: Tipo Trasporto Bluetooth
+            // Riga 1: Tipo Trasporto Bluetooth Compattato (AUTO, BT, BT BLE)
             Text(
-                text = "TIPO DI TRASPORTO BLUETOOTH",
+                text = "TRASPORTO BLUETOOTH",
                 fontSize = 10.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = RacingYellow
@@ -446,7 +443,7 @@ fun TestControlCard(
                     FilterChip(
                         selected = selectedTransportMode == mode,
                         onClick = { if (!isTesting) onSelectTransportMode(mode) },
-                        label = { Text(mode.label, fontSize = 9.sp, color = if (selectedTransportMode == mode) RacingBackground else RacingText) },
+                        label = { Text(mode.label, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (selectedTransportMode == mode) RacingBackground else RacingText) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = RacingYellow,
                             containerColor = RacingSurfaceSecondary
@@ -489,34 +486,7 @@ fun TestControlCard(
                 }
             }
 
-            // Riga 3: Numero Campioni Ripetibili (10, 100, 500, 1000)
-            Text(
-                text = "NUMERO DI CAMPIONI PER TEST",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = RacingYellow
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                listOf(10, 100, 500, 1000).forEach { count ->
-                    FilterChip(
-                        selected = selectedRequestCount == count,
-                        onClick = { if (!isTesting) onSelectRequestCount(count) },
-                        label = { Text("$count", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (selectedRequestCount == count) RacingBackground else RacingText) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = RacingYellow,
-                            containerColor = RacingSurfaceSecondary
-                        ),
-                        enabled = !isTesting,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            // Autorizzazione di Sicurezza opzionale per il Test 6 (ABS Pump OFF)
+            // Flag/Switch per abilitare il comando ABS Pompa OFF (30 02 07 00)
             if (selectedProfile == ObdProfile.LOTUS_ABS) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -524,9 +494,9 @@ fun TestControlCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Autorizza Test 6: ABS Pump OFF (30 02 07 00 - Veicolo Fermo)",
+                        text = "Includi Test 6: Pompa ABS OFF (30 02 07 00)",
                         fontSize = 9.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Bold,
                         color = if (isAbsPumpOffAuthorized) RacingYellow else RacingTextSecondary,
                         modifier = Modifier.weight(1f)
                     )
@@ -713,7 +683,6 @@ fun CurrentMetricsCard(
                 )
             }
 
-            // Dettaglio dei singoli test della sequenza
             if (metrics.testSummaries.isNotEmpty()) {
                 HorizontalDivider(color = RacingSurfaceSecondary)
                 Text(
