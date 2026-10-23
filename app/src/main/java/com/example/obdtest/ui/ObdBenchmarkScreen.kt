@@ -336,7 +336,7 @@ fun DeviceSelectorCard(
                     textStyle = LocalTextStyle.current.copy(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        lineHeight = 13.sp
+                        lineHeight = 14.sp
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = RacingText,
@@ -349,7 +349,7 @@ fun DeviceSelectorCard(
                     modifier = Modifier
                         .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .height(60.dp)
                 )
 
                 ExposedDropdownMenu(
