@@ -98,6 +98,9 @@ class ObdBenchmarkEngine {
     @Volatile
     private var blePromptTimestampNanos = 0L
 
+    @Volatile
+    private var bleCurrentCommand = ""
+
     private val bleLock = Any()
 
     @Volatile
@@ -143,15 +146,10 @@ class ObdBenchmarkEngine {
         activeSessionId = System.currentTimeMillis()
         val currentSessionId = activeSessionId
 
-        val deviceNameUpper = (device.name ?: "").uppercase(Locale.US)
         val isExplicitBle = transportMode == TransportMode.BLE_GATT ||
                 (transportMode == TransportMode.AUTO && (
                         device.type == BluetoothDevice.DEVICE_TYPE_LE ||
-                        device.type == BluetoothDevice.DEVICE_TYPE_DUAL ||
-                        deviceNameUpper.contains("NORAUTO") ||
-                        deviceNameUpper.contains("BLE") ||
-                        deviceNameUpper.contains("VGATE") ||
-                        deviceNameUpper.contains("GATT")
+                        device.type == BluetoothDevice.DEVICE_TYPE_DUAL
                 ))
 
         isBleMode = isExplicitBle
@@ -351,6 +349,7 @@ class ObdBenchmarkEngine {
                             samplesExecuted = 0,
                             positiveResponses = 0,
                             negativeResponses = 0,
+                            unexpectedResponses = 0,
                             timeouts = 0,
                             adapterErrors = 0,
                             minLatencyMs = 0.0,
@@ -372,7 +371,7 @@ class ObdBenchmarkEngine {
                     continue
                 }
 
-                log("=== AVBIO TEST ${testIdx + 1}/${activeTestSequence.size}: ${testDef.name} (${testDef.command.trim()}) ===")
+                log("=== AVVIO TEST ${testIdx + 1}/${activeTestSequence.size}: ${testDef.name} (${testDef.command.trim()}) ===")
                 val testSamples = mutableListOf<CommandTimingSample>()
                 var lastT0Nanos = 0L
 
@@ -481,6 +480,7 @@ class ObdBenchmarkEngine {
             bleFirstByteTimestampNanos = 0L
             blePayloadTimestampNanos = 0L
             blePromptTimestampNanos = 0L
+            bleCurrentCommand = command
         }
 
         val commandBytes = command.toByteArray(Charsets.US_ASCII)
@@ -492,8 +492,8 @@ class ObdBenchmarkEngine {
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
 
-        val writeSuccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(rxChar, commandBytes, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeCharacteristic(rxChar, commandBytes, writeType)
         } else {
             @Suppress("DEPRECATION")
             rxChar.value = commandBytes
@@ -517,9 +517,14 @@ class ObdBenchmarkEngine {
                 if (bleFirstByteTimestampNanos > 0L && t2Nanos == 0L) {
                     t2Nanos = bleFirstByteTimestampNanos
                 }
+                if (blePayloadTimestampNanos > 0L && tPayloadNanos == 0L) {
+                    tPayloadNanos = blePayloadTimestampNanos
+                }
                 if (bleResponseBuffer.contains(">")) {
                     t3Nanos = if (blePromptTimestampNanos > 0L) blePromptTimestampNanos else SystemClock.elapsedRealtimeNanos()
-                    tPayloadNanos = if (blePayloadTimestampNanos > 0L) blePayloadTimestampNanos else t3Nanos
+                    if (tPayloadNanos == 0L) {
+                        tPayloadNanos = if (blePayloadTimestampNanos > 0L) blePayloadTimestampNanos else t3Nanos
+                    }
                     rawResponse = bleResponseBuffer.toString()
                 }
             }
@@ -560,7 +565,7 @@ class ObdBenchmarkEngine {
             t0Nanos = t0Nanos,
             t1Nanos = t1Nanos,
             t2Nanos = if (t2Nanos > 0) t2Nanos else t3Nanos,
-            tPayloadNanos = if (tPayloadNanos > 0) tPayloadNanos else t3Nanos,
+            tPayloadNanos = tPayloadNanos,
             t3Nanos = t3Nanos,
             writeDurationMs = writeDurationMs,
             timeToFirstByteMs = timeToFirstByteMs,
@@ -623,12 +628,12 @@ class ObdBenchmarkEngine {
                         val text = String(buffer, 0, bytesRead, Charsets.US_ASCII)
                         responseBuilder.append(text)
 
-                        // Tracciamento grano-fine per isolare il ritardo di ~202 ms
-                        if (!text.contains(">") && tPayloadNanos == 0L) {
+                        val currentResponse = responseBuilder.toString()
+                        if (tPayloadNanos == 0L && ObdResponseParser.isDiagnosticPayloadComplete(command, currentResponse)) {
                             tPayloadNanos = nowNanos
                         }
 
-                        if (responseBuilder.contains(">")) {
+                        if (currentResponse.contains(">")) {
                             t3Nanos = nowNanos
                             if (tPayloadNanos == 0L) tPayloadNanos = nowNanos
                             break
@@ -674,7 +679,7 @@ class ObdBenchmarkEngine {
             t0Nanos = t0Nanos,
             t1Nanos = t1Nanos,
             t2Nanos = if (t2Nanos > 0) t2Nanos else t3Nanos,
-            tPayloadNanos = if (tPayloadNanos > 0) tPayloadNanos else t3Nanos,
+            tPayloadNanos = tPayloadNanos,
             t3Nanos = t3Nanos,
             writeDurationMs = writeDurationMs,
             timeToFirstByteMs = timeToFirstByteMs,
@@ -708,7 +713,7 @@ class ObdBenchmarkEngine {
             t0Nanos = now,
             t1Nanos = now,
             t2Nanos = now,
-            tPayloadNanos = now,
+            tPayloadNanos = 0L,
             t3Nanos = now,
             writeDurationMs = 0.0,
             timeToFirstByteMs = 0.0,
@@ -737,6 +742,7 @@ class ObdBenchmarkEngine {
                 samplesExecuted = 0,
                 positiveResponses = 0,
                 negativeResponses = 0,
+                unexpectedResponses = 0,
                 timeouts = 0,
                 adapterErrors = 0,
                 minLatencyMs = 0.0,
@@ -758,30 +764,36 @@ class ObdBenchmarkEngine {
 
         val positiveCount = samples.count { it.status == SampleStatus.POSITIVE_RESPONSE || it.status == SampleStatus.SUCCESS }
         val negativeCount = samples.count { it.status == SampleStatus.NEGATIVE_RESPONSE }
+        val unexpectedCount = samples.count { it.status == SampleStatus.UNEXPECTED_RESPONSE }
         val timeoutCount = samples.count { it.status == SampleStatus.TIMEOUT }
         val adapterCount = samples.count { it.status == SampleStatus.ADAPTER_ERROR || it.status == SampleStatus.TRANSPORT_ERROR }
 
-        val positiveLatencies = samples.filter { it.status == SampleStatus.POSITIVE_RESPONSE || it.status == SampleStatus.SUCCESS }.map { it.totalRoundTripMs }
-        val minLatency = positiveLatencies.minOrNull() ?: 0.0
-        val maxLatency = positiveLatencies.maxOrNull() ?: 0.0
-        val avgLatency = if (positiveLatencies.isNotEmpty()) positiveLatencies.average() else 0.0
+        // Mantiene l'ordine cronologico originale d'esecuzione dei campioni per il calcolo delle medie e del Jitter
+        val completedChronologicalSamples = samples.filter { it.status != SampleStatus.TIMEOUT && it.status != SampleStatus.TRANSPORT_ERROR }
+        val chronologicalLatencies = completedChronologicalSamples.map { it.totalRoundTripMs }
 
-        val sorted = positiveLatencies.sorted()
-        val p50 = getPercentile(sorted, 50.0)
-        val p95 = getPercentile(sorted, 95.0)
-        val p99 = getPercentile(sorted, 99.0)
+        val minLatency = chronologicalLatencies.minOrNull() ?: 0.0
+        val maxLatency = chronologicalLatencies.maxOrNull() ?: 0.0
+        val avgLatency = if (chronologicalLatencies.isNotEmpty()) chronologicalLatencies.average() else 0.0
 
-        val stdDev = if (positiveLatencies.size > 1) {
+        // Percentili calcolati ESCLUSIVAMENTE sulla lista ordinata
+        val sortedLatencies = chronologicalLatencies.sorted()
+        val p50 = getPercentile(sortedLatencies, 50.0)
+        val p95 = getPercentile(sortedLatencies, 95.0)
+        val p99 = getPercentile(sortedLatencies, 99.0)
+
+        val stdDev = if (chronologicalLatencies.size > 1) {
             val mean = avgLatency
-            sqrt(positiveLatencies.sumOf { (it - mean) * (it - mean) } / positiveLatencies.size)
+            sqrt(chronologicalLatencies.sumOf { (it - mean) * (it - mean) } / chronologicalLatencies.size)
         } else 0.0
 
-        val jitter = if (positiveLatencies.size > 1) {
+        // Jitter calcolato sui campioni consecutivi completati nell'ordine CRONOLOGICO ORIGINALE: media(|RTT[i] - RTT[i-1]|)
+        val jitter = if (chronologicalLatencies.size > 1) {
             var diffSum = 0.0
-            for (i in 0 until positiveLatencies.size - 1) {
-                diffSum += kotlin.math.abs(positiveLatencies[i + 1] - positiveLatencies[i])
+            for (i in 0 until chronologicalLatencies.size - 1) {
+                diffSum += kotlin.math.abs(chronologicalLatencies[i + 1] - chronologicalLatencies[i])
             }
-            diffSum / (positiveLatencies.size - 1)
+            diffSum / (chronologicalLatencies.size - 1)
         } else 0.0
 
         val intervals = samples.drop(1).map { it.interRequestIntervalMs }.filter { it > 0 }
@@ -792,8 +804,11 @@ class ObdBenchmarkEngine {
         val percentUnder30 = if (intervals.isNotEmpty()) (countUnder30.toDouble() / intervals.size) * 100.0 else 0.0
         val percentUnder40 = if (intervals.isNotEmpty()) (countUnder40.toDouble() / intervals.size) * 100.0 else 0.0
 
-        val totalTimeSec = (samples.map { it.totalRoundTripMs }.sum() / 1000.0).coerceAtLeast(0.001)
-        val pidsPerSec = positiveCount / totalTimeSec
+        // Throughput = transazioni completate / durata effettiva del test in secondi
+        val firstT0 = samples.first().t0Nanos
+        val lastT3 = samples.last().t3Nanos
+        val testDurationSec = ((lastT3 - firstT0) / 1_000_000_000.0).coerceAtLeast(0.001)
+        val commandsPerSec = samples.size / testDurationSec
 
         val singleResText = if (testDef.isSingleExecution) {
             val first = samples.first()
@@ -807,6 +822,7 @@ class ObdBenchmarkEngine {
             samplesExecuted = samples.size,
             positiveResponses = positiveCount,
             negativeResponses = negativeCount,
+            unexpectedResponses = unexpectedCount,
             timeouts = timeoutCount,
             adapterErrors = adapterCount,
             minLatencyMs = minLatency,
@@ -818,7 +834,7 @@ class ObdBenchmarkEngine {
             stdDevMs = stdDev,
             jitterMs = jitter,
             avgInterRequestIntervalMs = avgInterval,
-            commandsPerSecond = pidsPerSec,
+            commandsPerSecond = commandsPerSec,
             percentUnder30ms = percentUnder30,
             percentUnder40ms = percentUnder40,
             isSingleExecution = testDef.isSingleExecution,
@@ -841,32 +857,35 @@ class ObdBenchmarkEngine {
         val timeoutCount = allSamples.count { it.status == SampleStatus.TIMEOUT }
         val incompleteCount = allSamples.count { it.status == SampleStatus.INCOMPLETE_RESPONSE }
 
-        val positiveSamples = allSamples.filter { it.status == SampleStatus.POSITIVE_RESPONSE || it.status == SampleStatus.SUCCESS }
-        val latencies = positiveSamples.map { it.totalRoundTripMs }
-        val minLatency = latencies.minOrNull() ?: 0.0
-        val maxLatency = latencies.maxOrNull() ?: 0.0
-        val avgLatency = if (latencies.isNotEmpty()) latencies.average() else 0.0
+        // Mantiene l'ordine cronologico originale d'esecuzione
+        val completedChronological = allSamples.filter { it.status != SampleStatus.TIMEOUT && it.status != SampleStatus.TRANSPORT_ERROR }
+        val chronologicalLatencies = completedChronological.map { it.totalRoundTripMs }
 
-        val sorted = latencies.sorted()
+        val minLatency = chronologicalLatencies.minOrNull() ?: 0.0
+        val maxLatency = chronologicalLatencies.maxOrNull() ?: 0.0
+        val avgLatency = if (chronologicalLatencies.isNotEmpty()) chronologicalLatencies.average() else 0.0
+
+        val sorted = chronologicalLatencies.sorted()
         val p50 = getPercentile(sorted, 50.0)
         val p95 = getPercentile(sorted, 95.0)
         val p99 = getPercentile(sorted, 99.0)
 
-        val stdDev = if (latencies.size > 1) {
+        val stdDev = if (chronologicalLatencies.size > 1) {
             val mean = avgLatency
-            sqrt(latencies.sumOf { (it - mean) * (it - mean) } / latencies.size)
+            sqrt(chronologicalLatencies.sumOf { (it - mean) * (it - mean) } / chronologicalLatencies.size)
         } else 0.0
 
-        val jitter = if (latencies.size > 1) {
+        // Jitter calcolato nell'ordine cronologico originale
+        val jitter = if (chronologicalLatencies.size > 1) {
             var diffSum = 0.0
-            for (i in 0 until latencies.size - 1) {
-                diffSum += kotlin.math.abs(latencies[i + 1] - latencies[i])
+            for (i in 0 until chronologicalLatencies.size - 1) {
+                diffSum += kotlin.math.abs(chronologicalLatencies[i + 1] - chronologicalLatencies[i])
             }
-            diffSum / (latencies.size - 1)
+            diffSum / (chronologicalLatencies.size - 1)
         } else 0.0
 
         val totalSec = (totalDurationMs / 1000.0).coerceAtLeast(0.001)
-        val pidsPerSec = positiveCount / totalSec
+        val commandsPerSec = allSamples.size / totalSec
 
         return baseMetrics.copy(
             totalCommandsSent = allSamples.size,
@@ -883,7 +902,7 @@ class ObdBenchmarkEngine {
             p99Ms = p99,
             stdDevMs = stdDev,
             jitterMs = jitter,
-            commandsPerSecond = pidsPerSec,
+            commandsPerSecond = commandsPerSec,
             testDurationMs = totalDurationMs,
             isPartialSession = isPartial,
             testSummaries = testSummaries,
@@ -1241,7 +1260,8 @@ class ObdBenchmarkEngine {
             }
             bleResponseBuffer.append(text)
 
-            if (!text.contains(">") && blePayloadTimestampNanos == 0L) {
+            val currentResponse = bleResponseBuffer.toString()
+            if (blePayloadTimestampNanos == 0L && ObdResponseParser.isDiagnosticPayloadComplete(bleCurrentCommand, currentResponse)) {
                 blePayloadTimestampNanos = nowNanos
             }
 
@@ -1324,7 +1344,7 @@ class ObdBenchmarkEngine {
             writer.println("# Durata Complessiva Fase Misurata (ms),${metrics.testDurationMs}")
             writer.println("#")
             writer.println("# --- RIEPILOGO STATISTICO PER SINGOLO TEST ---")
-            writer.println("Test_Name,Command,Requested,Executed,Positive_Responses,Negative_Responses,Timeouts,Adapter_Errors,Min_ms,Avg_ms,Max_ms,P50_ms,P95_ms,P99_ms,StdDev_ms,Jitter_ms,Avg_InterRequest_ms,Cmd_per_Sec,Percent_under_30ms,Percent_under_40ms,Single_Execution_Result")
+            writer.println("Test_Name,Command,Requested,Executed,Positive_Responses,Negative_Responses,Unexpected_Responses,Timeouts,Adapter_Errors,Min_ms,Avg_ms,Max_ms,P50_ms,P95_ms,P99_ms,StdDev_ms,Jitter_ms,Avg_InterRequest_ms,Cmd_per_Sec,Percent_under_30ms,Percent_under_40ms,Single_Execution_Result")
 
             metrics.testSummaries.forEach { s ->
                 writer.println(
@@ -1334,6 +1354,7 @@ class ObdBenchmarkEngine {
                             "${s.samplesExecuted}," +
                             "${s.positiveResponses}," +
                             "${s.negativeResponses}," +
+                            "${s.unexpectedResponses}," +
                             "${s.timeouts}," +
                             "${s.adapterErrors}," +
                             "${String.format(Locale.US, "%.3f", s.minLatencyMs)}," +

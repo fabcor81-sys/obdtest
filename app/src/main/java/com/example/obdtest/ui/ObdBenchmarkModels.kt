@@ -1,15 +1,16 @@
 package com.example.obdtest.ui
 
 enum class SampleStatus {
-    POSITIVE_RESPONSE,   // Risposta KWP2000 o AT positiva con prompt
+    POSITIVE_RESPONSE,   // Risposta positiva KWP2000 / AT attesa e verificata
     NEGATIVE_RESPONSE,   // Risposta negativa KWP2000 (es. 7F 01 11 / 7F 30 22)
+    UNEXPECTED_RESPONSE, // Payload diagnostico arrivato ma relativo ad un altro comando
     TIMEOUT,             // Nessuna risposta o nessun prompt entro il timeout
     INCOMPLETE_RESPONSE, // Risposta parziale priva di prompt o troncata
-    ADAPTER_ERROR,       // Errore dell'adattatore ELM (es. BUS INIT: ERROR, UNABLE TO CONNECT, ?)
+    ADAPTER_ERROR,       // Errore dell'adattatore ELM (es. BUS INIT: ERROR, STOPPED, ?)
     TRANSPORT_ERROR,     // Errore del socket/GATT Bluetooth
     UNSUPPORTED,         // Servizio o comando non supportato
     NOT_VERIFIED,        // Comando o test non ancora verificato su hardware
-    SUCCESS              // Compatibilità con codice precedente
+    SUCCESS              // Alias di compatibilità
 }
 
 enum class TransportMode(val label: String) {
@@ -102,6 +103,7 @@ data class SingleTestSummary(
     val samplesExecuted: Int,
     val positiveResponses: Int,
     val negativeResponses: Int,
+    val unexpectedResponses: Int = 0,
     val timeouts: Int,
     val adapterErrors: Int,
     val minLatencyMs: Double,
@@ -164,7 +166,7 @@ data class BenchmarkMetrics(
     val successRatePercent: Double
         get() = if (totalCommandsSent > 0) (successCount.toDouble() / totalCommandsSent.toDouble()) * 100.0 else 0.0
     val speedUnitLabel: String
-        get() = if (obdProfile == ObdProfile.AT_ONLY) "Cmd/s" else "PID/s"
+        get() = if (obdProfile == ObdProfile.AT_ONLY) "Cmd/s" else "Transactions/s"
 }
 
 data class ObdUiState(

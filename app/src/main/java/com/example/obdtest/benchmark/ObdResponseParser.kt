@@ -52,6 +52,31 @@ object ObdResponseParser {
         return clean
     }
 
+    /**
+     * Identifica se il buffer grezzo contiene già la risposta diagnostica KWP2000 / AT completa,
+     * consentendo di catturare il timestamp esatto tPayload prima dell'arrivo del prompt '>'.
+     */
+    fun isDiagnosticPayloadComplete(sentCommand: String, rawResponse: String): Boolean {
+        val cmdClean = sentCommand.trim().replace("\r", "").replace(" ", "").uppercase(Locale.US)
+        val upperRaw = rawResponse.uppercase(Locale.US).replace(" ", "")
+
+        return when {
+            // Comando AT (ATI, ATE0, etc.)
+            cmdClean.startsWith("AT") -> upperRaw.contains("ELM") || upperRaw.contains("OK")
+            // Risposta negativa KWP2000 (7F ...)
+            upperRaw.contains("7F") -> Regex("7F[0-9A-F]{4}").containsMatchIn(upperRaw)
+            // 0100 -> 4100 [4 Bytes Hex]
+            cmdClean == "0100" -> upperRaw.contains("4100")
+            // 1A80 -> 5A80
+            cmdClean.startsWith("1A") -> upperRaw.contains("5A")
+            // 2101 / 2102 -> 6101 / 6102
+            cmdClean.startsWith("21") -> upperRaw.contains("61")
+            // 30020700 -> 70020700
+            cmdClean.startsWith("30") -> upperRaw.contains("70")
+            else -> false
+        }
+    }
+
     fun parseResponse(
         profile: ObdProfile,
         commandSent: String,
@@ -80,7 +105,8 @@ object ObdResponseParser {
             return ParseResult(SampleStatus.ADAPTER_ERROR, cleaned)
         }
 
-        if (profile == ObdProfile.AT_ONLY) {
+        // Comandi AT (es. ATI)
+        if (profile == ObdProfile.AT_ONLY || commandSent.trim().uppercase(Locale.US).startsWith("AT")) {
             return if (cleaned.isNotBlank()) {
                 ParseResult(SampleStatus.POSITIVE_RESPONSE, cleaned, extractedPayload = cleaned)
             } else {
@@ -88,8 +114,9 @@ object ObdResponseParser {
             }
         }
 
-        // 1. Controllo Risposte Negative KWP2000 / ISO 14230 (7F [Service ID] [NRC])
         val compactCleaned = upperCleaned.replace(" ", "")
+
+        // 1. Controllo Risposte Negative KWP2000 / ISO 14230 (7F [Service ID] [NRC])
         val nrcMatch = Regex("7F([0-9A-F]{2})([0-9A-F]{2})").find(compactCleaned)
         if (nrcMatch != null) {
             val service = nrcMatch.groupValues[1]
@@ -105,26 +132,24 @@ object ObdResponseParser {
 
         val cmdClean = commandSent.trim().replace("\r", "").replace(" ", "").uppercase(Locale.US)
 
-        // 2. Controllo Risposte Positive KWP2000 / OBD2
+        // 2. Controllo Risposte Positive KWP2000 / OBD2 per comando specifico
         when {
-            // Comando 0100 (OBD2 Mode 01 PID 00) -> 4100 [4 Bytes]
             cmdClean == "0100" -> {
-                val payload = compactCleaned.split("4100").drop(1).firstOrNull()
-                if (payload != null && payload.length >= 8) {
+                val payloadIndex = compactCleaned.indexOf("4100")
+                if (payloadIndex >= 0 && compactCleaned.length >= payloadIndex + 12) {
+                    val fullPayload = compactCleaned.substring(payloadIndex, payloadIndex + 12)
                     return ParseResult(
                         status = SampleStatus.POSITIVE_RESPONSE,
                         cleanedResponse = cleaned,
-                        extractedPayload = "4100" + payload.substring(0, 8),
+                        extractedPayload = fullPayload,
                         serviceId = "01"
                     )
                 }
             }
 
-            // Service 0x1A (ReadECUIdentification - es. 1A 80) -> Risposta 5A 80 ...
             cmdClean.startsWith("1A") -> {
-                val sub = if (cmdClean.length >= 4) cmdClean.substring(2, 4) else ""
-                val targetHeader = "5A" + sub
-                if (compactCleaned.contains(targetHeader) || compactCleaned.startsWith("5A")) {
+                val targetHeader = "5A" + if (cmdClean.length >= 4) cmdClean.substring(2, 4) else "80"
+                if (compactCleaned.contains(targetHeader)) {
                     return ParseResult(
                         status = SampleStatus.POSITIVE_RESPONSE,
                         cleanedResponse = cleaned,
@@ -134,11 +159,9 @@ object ObdResponseParser {
                 }
             }
 
-            // Service 0x21 (ReadDataByLocalIdentifier - es. 21 01, 21 02) -> Risposta 61 01 ...
             cmdClean.startsWith("21") -> {
-                val sub = if (cmdClean.length >= 4) cmdClean.substring(2, 4) else ""
-                val targetHeader = "61" + sub
-                if (compactCleaned.contains(targetHeader) || compactCleaned.startsWith("61")) {
+                val targetHeader = "61" + if (cmdClean.length >= 4) cmdClean.substring(2, 4) else "01"
+                if (compactCleaned.contains(targetHeader)) {
                     return ParseResult(
                         status = SampleStatus.POSITIVE_RESPONSE,
                         cleanedResponse = cleaned,
@@ -148,7 +171,6 @@ object ObdResponseParser {
                 }
             }
 
-            // Service 0x30 (InputOutputControlByLocalIdentifier - es. 30 02 07 00) -> Risposta 70 02 07 00
             cmdClean.startsWith("30") -> {
                 if (compactCleaned.contains("70020700") || compactCleaned.startsWith("70")) {
                     return ParseResult(
@@ -161,15 +183,15 @@ object ObdResponseParser {
             }
         }
 
-        // Se è arrivate una risposta non riconosciuta come errore o positiva
-        return if (cleaned.isNotBlank()) {
-            ParseResult(
-                status = SampleStatus.POSITIVE_RESPONSE,
+        // 3. Rilevazione Risposta Inaspettata (UNEXPECTED_RESPONSE): payload diagnostico arrivato ma non corrispondente
+        if (compactCleaned.startsWith("5A") || compactCleaned.startsWith("61") || compactCleaned.startsWith("70") || compactCleaned.startsWith("41")) {
+            return ParseResult(
+                status = SampleStatus.UNEXPECTED_RESPONSE,
                 cleanedResponse = cleaned,
                 extractedPayload = cleaned
             )
-        } else {
-            ParseResult(SampleStatus.INCOMPLETE_RESPONSE, cleaned)
         }
+
+        return ParseResult(SampleStatus.INCOMPLETE_RESPONSE, cleaned)
     }
 }

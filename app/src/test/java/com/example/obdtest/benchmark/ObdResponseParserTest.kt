@@ -3,6 +3,7 @@ package com.example.obdtest.benchmark
 import com.example.obdtest.ui.ObdProfile
 import com.example.obdtest.ui.SampleStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ObdResponseParserTest {
@@ -52,6 +53,26 @@ class ObdResponseParserTest {
         assertEquals(SampleStatus.NEGATIVE_RESPONSE, result.status)
         assertEquals("30", result.serviceId)
         assertEquals("22", result.nrcCode)
+    }
+
+    @Test
+    fun testUnexpectedResponseServiceMismatch() {
+        val raw = "2101\r61 02 00 12\r\n>"
+        val result = ObdResponseParser.parseResponse(
+            profile = ObdProfile.LOTUS_ABS,
+            commandSent = "2101\r",
+            rawResponse = raw,
+            hasPrompt = true,
+            bytesReceived = raw.length
+        )
+
+        assertEquals(SampleStatus.UNEXPECTED_RESPONSE, result.status)
+    }
+
+    @Test
+    fun testDiagnosticPayloadCompleteDetection() {
+        assertTrue(ObdResponseParser.isDiagnosticPayloadComplete("2101\r", "61 01 82\r\n"))
+        assertTrue(ObdResponseParser.isDiagnosticPayloadComplete("ATI\r", "ELM327 v2.2\r\n"))
     }
 
     @Test
