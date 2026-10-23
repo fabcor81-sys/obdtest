@@ -65,7 +65,7 @@ fun ObdBenchmarkScreen(
                             color = RacingYellow
                         )
                         Text(
-                            text = "Motorsport Performance & Latenza Lotus EBC430",
+                            text = com.example.obdtest.AppVersion.BUILD_TAG,
                             style = MaterialTheme.typography.bodySmall,
                             fontSize = 11.sp,
                             color = RacingTextSecondary

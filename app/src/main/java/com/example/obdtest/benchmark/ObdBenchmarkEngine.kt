@@ -186,6 +186,7 @@ class ObdBenchmarkEngine {
         )
 
         try {
+            log("=== OBD2 BENCHMARK ENGINE ${com.example.obdtest.AppVersion.FULL_VERSION_STRING} ===")
             log("Connessione a ${device.name ?: device.address} via ${effectiveTransport.label}...")
             onStatusUpdate(BenchmarkStatus.Connecting, "Connessione in corso a ${device.name ?: device.address} (${effectiveTransport.label})...")
 
@@ -1325,6 +1326,7 @@ class ObdBenchmarkEngine {
 
         csvFile.printWriter(Charsets.UTF_8).use { writer ->
             writer.println("# OBD2 SPEED BENCHMARK METROLOGICO REPORT - LOTUS EBC430 / KWP2000")
+            writer.println("# Versione Applicazione,${com.example.obdtest.AppVersion.FULL_VERSION_STRING}")
             writer.println("# Data Generazione,${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
             writer.println("# Stato Sessione,${if (metrics.isPartialSession) "INTERROTTA / PARZIALE" else "COMPLETATA"}")
             writer.println("# Dispositivo,${escapeCsvField(metrics.deviceName)}")
