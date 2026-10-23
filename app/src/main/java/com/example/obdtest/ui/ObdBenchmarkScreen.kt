@@ -101,7 +101,7 @@ fun ObdBenchmarkScreen(
             } else if (!uiState.isBluetoothEnabled) {
                 BluetoothDisabledCard(onRefreshDevices = onRefreshDevices)
             } else {
-                // 1. Selettore Dispositivo Bluetooth Compattato con Font Ridotto
+                // 1. Selettore Dispositivo Bluetooth Compattato e Perfettamente Leggibile
                 DeviceSelectorCard(
                     devices = uiState.pairedDevices,
                     selectedDevice = uiState.selectedDevice,
@@ -116,7 +116,7 @@ fun ObdBenchmarkScreen(
                             uiState.status !is BenchmarkStatus.Error
                 )
 
-                // 2. Controlli Trasporto compatti (AUTO, BT, BT BLE), Profilo, Flag Pompa OFF e Pulsante Unico
+                // 2. Controlli Trasporto, Profilo, Flag Pompa ABS OFF e Pulsante Unico Avvio
                 TestControlCard(
                     status = uiState.status,
                     statusMessage = uiState.statusMessage,
@@ -264,8 +264,6 @@ fun DeviceSelectorCard(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    val selectedText = selectedDevice?.let { "${it.name} (${it.address})" } ?: "Nessun dispositivo selezionato"
-
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -313,43 +311,57 @@ fun DeviceSelectorCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             ExposedDropdownMenuBox(
                 expanded = expanded && !isTesting,
                 onExpandedChange = { if (!isTesting) expanded = !expanded }
             ) {
-                OutlinedTextField(
-                    value = selectedText,
-                    onValueChange = {},
-                    readOnly = true,
-                    enabled = !isTesting,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Bluetooth,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = RacingYellow
-                        )
-                    },
-                    textStyle = LocalTextStyle.current.copy(
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = RacingText,
-                        unfocusedTextColor = RacingText,
-                        focusedBorderColor = RacingYellow,
-                        unfocusedBorderColor = RacingSurfaceSecondary,
-                        focusedContainerColor = RacingSurfaceSecondary,
-                        unfocusedContainerColor = RacingSurfaceSecondary
-                    ),
+                Surface(
+                    onClick = { if (!isTesting) expanded = !expanded },
+                    shape = RoundedCornerShape(8.dp),
+                    color = RacingSurfaceSecondary,
                     modifier = Modifier
                         .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                         .fillMaxWidth()
-                        .height(44.dp)
-                )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                Icons.Default.Bluetooth,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = RacingYellow
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = selectedDevice?.name ?: "Nessun dispositivo selezionato",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = RacingText
+                                )
+                                if (selectedDevice != null) {
+                                    Text(
+                                        text = "MAC: ${selectedDevice.address}",
+                                        fontSize = 10.sp,
+                                        color = RacingTextSecondary
+                                    )
+                                }
+                            }
+                        }
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                    }
+                }
 
                 ExposedDropdownMenu(
                     expanded = expanded && !isTesting,
@@ -369,10 +381,10 @@ fun DeviceSelectorCard(
                             DropdownMenuItem(
                                 text = {
                                     Column {
-                                        Text(device.name, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = RacingText)
+                                        Text(device.name, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = RacingText)
                                         Text(
                                             device.address,
-                                            fontSize = 9.sp,
+                                            fontSize = 10.sp,
                                             color = RacingTextSecondary
                                         )
                                     }
@@ -385,7 +397,7 @@ fun DeviceSelectorCard(
                                     Icon(
                                         Icons.Default.BluetoothConnected,
                                         contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
+                                        modifier = Modifier.size(16.dp),
                                         tint = RacingYellow
                                     )
                                 }
@@ -488,28 +500,36 @@ fun TestControlCard(
 
             // Flag/Switch per abilitare il comando ABS Pompa OFF (30 02 07 00)
             if (selectedProfile == ObdProfile.LOTUS_ABS) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = RacingSurfaceSecondary,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = "Includi Test 6: Pompa ABS OFF (30 02 07 00)",
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isAbsPumpOffAuthorized) RacingYellow else RacingTextSecondary,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Switch(
-                        checked = isAbsPumpOffAuthorized,
-                        onCheckedChange = { if (!isTesting) onToggleAbsPumpOffAuthorization(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = RacingYellow,
-                            checkedTrackColor = RacingSurfaceSecondary
-                        ),
-                        enabled = !isTesting,
-                        modifier = Modifier.height(24.dp)
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Abilita Test 6: Pompa ABS OFF (30 02 07 00)",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isAbsPumpOffAuthorized) RacingYellow else RacingTextSecondary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = isAbsPumpOffAuthorized,
+                            onCheckedChange = { if (!isTesting) onToggleAbsPumpOffAuthorization(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = RacingYellow,
+                                checkedTrackColor = RacingSurfaceSecondary
+                            ),
+                            enabled = !isTesting,
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
                 }
             }
 
