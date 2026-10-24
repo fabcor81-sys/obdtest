@@ -20,6 +20,8 @@ import com.example.obdtest.ui.ObdProfile
 import com.example.obdtest.ui.SampleStatus
 import com.example.obdtest.ui.SingleTestSummary
 import com.example.obdtest.ui.TransportMode
+import com.example.obdtest.usb.Kwp2000KLineTransport
+import com.example.obdtest.usb.UsbKLineManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -446,6 +448,212 @@ class ObdBenchmarkEngine {
             throw e
         } finally {
             closeConnection()
+        }
+    }
+
+    suspend fun runUsbKLineBenchmark(
+        context: Context,
+        usbDeviceItem: com.example.obdtest.ui.BluetoothDeviceItem,
+        targetRequestCount: Int = 100,
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        onStatusUpdate: (BenchmarkStatus, String) -> Unit,
+        onMetricsUpdate: (BenchmarkMetrics) -> Unit
+    ): BenchmarkMetrics = withContext(Dispatchers.IO) {
+        isRunning = true
+        activeSessionId = System.currentTimeMillis()
+
+        val usbManagerHelper = UsbKLineManager(context.applicationContext)
+        val driver = usbManagerHelper.findUsbDriverForAddress(usbDeviceItem.address)
+            ?: throw java.io.IOException("Dispositivo USB ${usbDeviceItem.name} non trovato tra i dispositivi seriali collegati.")
+
+        if (!usbManagerHelper.hasPermission(driver)) {
+            throw SecurityException("Permesso USB non concesso per il dispositivo ${usbDeviceItem.name}.")
+        }
+
+        val usbSysManager = context.getSystemService(Context.USB_SERVICE) as android.hardware.usb.UsbManager
+        val connection = usbSysManager.openDevice(driver.device)
+            ?: throw java.io.IOException("Impossibile aprire la connessione al dispositivo USB FTDI.")
+
+        val serialPort = driver.ports[0]
+
+        val transport = Kwp2000KLineTransport(
+            port = serialPort,
+            targetAddress = 0x2B.toByte(),
+            sourceAddress = 0xF1.toByte(),
+            isEchoFilterEnabled = true
+        )
+
+        var metrics = BenchmarkMetrics(
+            deviceName = usbDeviceItem.name,
+            deviceAddress = usbDeviceItem.address,
+            effectiveTransport = TransportMode.USB_KLINE,
+            obdProfile = ObdProfile.LOTUS_ABS,
+            targetRequestCount = targetRequestCount,
+            timeoutMs = timeoutMs
+        )
+
+        val initLogEntries = mutableListOf<String>()
+        val allSamples = mutableListOf<CommandTimingSample>()
+        val testSummaries = mutableListOf<SingleTestSummary>()
+
+        fun logUsb(msg: String, isErr: Boolean = false) {
+            initLogEntries.add(msg)
+            log(msg, isErr)
+        }
+
+        val benchmarkStartMs = SystemClock.elapsedRealtime()
+
+        try {
+            logUsb("=== BENCHMARK USB K-LINE FTDI LOTUS EBC430 ===")
+            logUsb("Apertura porta seriale FTDI (10400 8N1)...")
+            onStatusUpdate(BenchmarkStatus.Connecting, "Apertura porta FTDI ${usbDeviceItem.name}...")
+
+            serialPort.open(connection)
+            transport.openPort(10400)
+
+            onStatusUpdate(BenchmarkStatus.Initializing, "Esecuzione Fast Init ISO 14230 (K-Line)...")
+
+            val initOk = transport.performFastInit { msg -> logUsb(msg) }
+
+            if (!initOk) {
+                throw java.io.IOException("Fast Init KWP2000 fallita. Verificare connessione K-Line ed ECU Lotus EBC430.")
+            }
+
+            metrics = metrics.copy(
+                elmVersion = "FTDI FT232R (KKL 409.1 Direct K-Line)",
+                protocolName = "ISO 14230 KWP2000 Direct K-Line (10400 8N1)",
+                initLog = initLogEntries
+            )
+            onMetricsUpdate(metrics)
+
+            coroutineContext.ensureActive()
+
+            // Requisito 6 & 9: Esclusivamente comandi READ-ONLY (1A80 e 2101) per la prima versione USB
+            val testSequence = listOf(
+                BenchmarkTestDefinition("1. ECU Identification", "1A80", targetRequestCount),
+                BenchmarkTestDefinition("2. Read Data By Local Identifier", "2101", targetRequestCount)
+            )
+
+            var lastSampleT3Nanos = SystemClock.elapsedRealtimeNanos()
+
+            testSequence.forEachIndexed { testIdx, testDef ->
+                coroutineContext.ensureActive()
+                if (!isRunning) return@forEachIndexed
+
+                logUsb("--- INIZIO TEST ${testIdx + 1}/${testSequence.size}: ${testDef.name} (${testDef.command}) ---")
+
+                onStatusUpdate(
+                    BenchmarkStatus.RunningTestSequence(
+                        currentTestIndex = testIdx + 1,
+                        totalTests = testSequence.size,
+                        testName = testDef.name,
+                        completedRequests = 0,
+                        targetRequests = testDef.repetitions,
+                        currentPidsPerSec = 0.0,
+                        lastLatencyMs = 0.0
+                    ),
+                    "Esecuzione ${testDef.name} (${testDef.repetitions} campioni)..."
+                )
+
+                val currentTestSamples = mutableListOf<CommandTimingSample>()
+
+                for (rep in 1..testDef.repetitions) {
+                    coroutineContext.ensureActive()
+                    if (!isRunning) break
+
+                    val exchangeResult = transport.sendDiagnosticReadCommand(
+                        commandCmdHex = testDef.command,
+                        timeoutMs = timeoutMs.toInt()
+                    ) { logMsg -> log(logMsg) }
+
+                    val writeDurationMs = (exchangeResult.t1Nanos - exchangeResult.t0Nanos) / 1_000_000.0
+                    val timeToFirstByteMs = if (exchangeResult.t2Nanos > exchangeResult.t1Nanos) (exchangeResult.t2Nanos - exchangeResult.t1Nanos) / 1_000_000.0 else 0.0
+                    val payloadRxMs = if (exchangeResult.tPayloadNanos > exchangeResult.t2Nanos) (exchangeResult.tPayloadNanos - exchangeResult.t2Nanos) / 1_000_000.0 else 0.0
+                    val totalRoundTripMs = (exchangeResult.t3Nanos - exchangeResult.t0Nanos) / 1_000_000.0
+                    val interRequestMs = if (currentTestSamples.isNotEmpty()) (exchangeResult.t0Nanos - lastSampleT3Nanos) / 1_000_000.0 else 0.0
+                    lastSampleT3Nanos = exchangeResult.t3Nanos
+
+                    val sampleStatus = if (exchangeResult.isSuccess) {
+                        SampleStatus.POSITIVE_RESPONSE
+                    } else if (exchangeResult.statusText.contains("NEGATIVE")) {
+                        SampleStatus.NEGATIVE_RESPONSE
+                    } else if (exchangeResult.statusText.contains("TIMEOUT")) {
+                        SampleStatus.TIMEOUT
+                    } else {
+                        SampleStatus.INCOMPLETE_RESPONSE
+                    }
+
+                    val sample = CommandTimingSample(
+                        sampleIndex = allSamples.size + 1,
+                        testName = testDef.name,
+                        t0Nanos = exchangeResult.t0Nanos,
+                        t1Nanos = exchangeResult.t1Nanos,
+                        t2Nanos = exchangeResult.t2Nanos,
+                        tPayloadNanos = exchangeResult.tPayloadNanos,
+                        t3Nanos = exchangeResult.t3Nanos,
+                        writeDurationMs = writeDurationMs,
+                        timeToFirstByteMs = timeToFirstByteMs,
+                        payloadRxDurationMs = payloadRxMs,
+                        promptDelayMs = 0.0,
+                        rxDurationMs = timeToFirstByteMs + payloadRxMs,
+                        totalRoundTripMs = totalRoundTripMs,
+                        interRequestIntervalMs = interRequestMs,
+                        status = sampleStatus,
+                        isSuccess = exchangeResult.isSuccess,
+                        isTimeout = sampleStatus == SampleStatus.TIMEOUT,
+                        commandSent = testDef.command,
+                        rawResponse = exchangeResult.rawRxHex,
+                        parsedResponse = exchangeResult.payloadHex,
+                        serviceId = if (exchangeResult.kwpFrame != null && exchangeResult.kwpFrame.payload.isNotEmpty()) String.format("%02X", exchangeResult.kwpFrame.payload[0].toInt() and 0xFF) else "",
+                        nrcCode = if (sampleStatus == SampleStatus.NEGATIVE_RESPONSE && exchangeResult.kwpFrame != null && exchangeResult.kwpFrame.payload.size >= 3) String.format("%02X", exchangeResult.kwpFrame.payload[2].toInt() and 0xFF) else ""
+                    )
+
+                    currentTestSamples.add(sample)
+                    allSamples.add(sample)
+
+                    val testDurationSec = ((exchangeResult.t3Nanos - currentTestSamples.first().t0Nanos) / 1_000_000_000.0).coerceAtLeast(0.001)
+                    val currentPidsSec = currentTestSamples.size / testDurationSec
+
+                    metrics = metrics.copy(
+                        totalCommandsSent = allSamples.size,
+                        successCount = allSamples.count { it.isSuccess },
+                        ecuErrorCount = allSamples.count { it.status == SampleStatus.NEGATIVE_RESPONSE },
+                        timeoutCount = allSamples.count { it.isTimeout },
+                        rawSamples = allSamples
+                    )
+                    onMetricsUpdate(metrics)
+
+                    if (rep % 5 == 0 || rep == testDef.repetitions) {
+                        onStatusUpdate(
+                            BenchmarkStatus.RunningTestSequence(
+                                currentTestIndex = testIdx + 1,
+                                totalTests = testSequence.size,
+                                testName = testDef.name,
+                                completedRequests = rep,
+                                targetRequests = testDef.repetitions,
+                                currentPidsPerSec = currentPidsSec,
+                                lastLatencyMs = totalRoundTripMs
+                            ),
+                            "Esecuzione ${testDef.name}: $rep/${testDef.repetitions} (${String.format(Locale.US, "%.1f", currentPidsSec)} trans/s)"
+                        )
+                    }
+                }
+
+                val testSummary = calculateSingleTestSummary(testDef, currentTestSamples)
+                testSummaries.add(testSummary)
+                metrics = metrics.copy(testSummaries = testSummaries)
+                onMetricsUpdate(metrics)
+            }
+
+            val totalDurationMs = SystemClock.elapsedRealtime() - benchmarkStartMs
+            metrics = metrics.copy(
+                testDurationMs = totalDurationMs,
+                isPartialSession = !isRunning
+            )
+            metrics
+
+        } finally {
+            transport.close()
         }
     }
 

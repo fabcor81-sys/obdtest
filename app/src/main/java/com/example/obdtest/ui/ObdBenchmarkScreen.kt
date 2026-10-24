@@ -277,7 +277,7 @@ fun DeviceSelectorCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "DISPOSITIVO OBD2 BLUETOOTH",
+                    text = "SELEZIONE DISPOSITIVO (BLUETOOTH / USB FTDI)",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
                     color = RacingYellow
@@ -318,7 +318,9 @@ fun DeviceSelectorCard(
                 onExpandedChange = { if (!isTesting) expanded = !expanded }
             ) {
                 OutlinedTextField(
-                    value = selectedDevice?.let { "${it.name}\nMAC: ${it.address}" } ?: "Nessun dispositivo selezionato",
+                    value = selectedDevice?.let {
+                        if (it.isUsb) "${it.name}\n${it.address}" else "${it.name}\nMAC: ${it.address}"
+                    } ?: "Nessun dispositivo selezionato",
                     onValueChange = {},
                     readOnly = true,
                     enabled = !isTesting,
@@ -327,7 +329,7 @@ fun DeviceSelectorCard(
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                     leadingIcon = {
                         Icon(
-                            Icons.Default.Bluetooth,
+                            if (selectedDevice?.isUsb == true) Icons.Default.Usb else Icons.Default.Bluetooth,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
                             tint = RacingYellow
@@ -384,7 +386,7 @@ fun DeviceSelectorCard(
                                 },
                                 leadingIcon = {
                                     Icon(
-                                        Icons.Default.BluetoothConnected,
+                                        if (device.isUsb) Icons.Default.Usb else Icons.Default.BluetoothConnected,
                                         contentDescription = null,
                                         modifier = Modifier.size(16.dp),
                                         tint = RacingYellow

@@ -10,8 +10,10 @@ composeBom = "2024.10.01"
 activityCompose = "1.9.3"
 lifecycleRuntimeKtx = "2.8.7"
 kotlin = "2.0.21"
+usbSerial = "3.11.0"
 
 [libraries]
+usb-serial = { group = "com.github.mik3y", name = "usb-serial-for-android", version.ref = "usbSerial" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

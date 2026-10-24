@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.obdtest.benchmark.ObdBenchmarkEngine
 import com.example.obdtest.bluetooth.BluetoothObdManager
+import com.example.obdtest.usb.UsbKLineManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,6 +20,7 @@ import java.io.File
 class ObdViewModel(application: Application) : AndroidViewModel(application) {
 
     private val bluetoothManager by lazy { BluetoothObdManager(application.applicationContext) }
+    private val usbKLineManager by lazy { UsbKLineManager(application.applicationContext) }
     private val benchmarkEngine by lazy { ObdBenchmarkEngine() }
 
     private val _uiState = MutableStateFlow(ObdUiState())
@@ -40,39 +42,61 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         val hasPerms = bluetoothManager.hasRequiredPermissions()
         val btEnabled = bluetoothManager.isBluetoothEnabled()
 
-        val paired = if (hasPerms && btEnabled) bluetoothManager.getPairedDevices() else emptyList()
+        val btPaired = if (hasPerms && btEnabled) bluetoothManager.getPairedDevices() else emptyList()
+        val usbDevices = usbKLineManager.getConnectedUsbDevices()
+
+        val allDevices = usbDevices + btPaired
 
         _uiState.update { currentState ->
             val currentSelected = currentState.selectedDevice
-            val stillPresent = paired.find { it.address == currentSelected?.address }
+            val stillPresent = allDevices.find { it.address == currentSelected?.address }
+            val newlySelected = stillPresent ?: allDevices.firstOrNull()
+
+            val selectedMode = if (newlySelected?.isUsb == true) {
+                TransportMode.USB_KLINE
+            } else if (currentState.selectedTransportMode == TransportMode.USB_KLINE) {
+                TransportMode.AUTO
+            } else {
+                currentState.selectedTransportMode
+            }
 
             val statusMsg = when {
-                !hasPerms -> "Richiesti permessi Bluetooth per proseguire"
-                !btEnabled -> "Bluetooth disattivato sullo smartphone"
-                paired.isEmpty() -> "Nessun dispositivo associato trovato. Usa 'Scansiona Dispositivi'."
-                else -> "Seleziona un dispositivo, modalità e avvia il benchmark metrologico"
+                allDevices.isNotEmpty() -> "Dispositivo pronto. Seleziona e avvia il benchmark metrologico."
+                !hasPerms -> "Richiesti permessi Bluetooth per scansionare adattatori wireless"
+                !btEnabled -> "Bluetooth disattivato sullo smartphone. Collega cavo USB o attiva BT."
+                else -> "Nessun dispositivo Bluetooth o USB trovato. Collega il cavo KKL USB OTG o usa 'Scansiona'."
             }
 
             currentState.copy(
                 hasPermissions = hasPerms,
                 isBluetoothEnabled = btEnabled,
-                pairedDevices = paired,
-                selectedDevice = stillPresent ?: paired.firstOrNull(),
+                pairedDevices = allDevices,
+                selectedDevice = newlySelected,
+                selectedTransportMode = selectedMode,
                 statusMessage = statusMsg
             )
         }
     }
 
     fun startDeviceScan() {
+        val usbDevices = usbKLineManager.getConnectedUsbDevices()
+
         if (!_uiState.value.hasPermissions || !_uiState.value.isBluetoothEnabled) {
-            refreshBluetoothState()
+            _uiState.update { currentState ->
+                val allDevs = (usbDevices + currentState.pairedDevices.filter { !it.isUsb }).distinctBy { it.address }
+                currentState.copy(
+                    pairedDevices = allDevs,
+                    selectedDevice = currentState.selectedDevice ?: allDevs.firstOrNull(),
+                    statusMessage = "Trovati ${usbDevices.size} dispositivi USB. Per Bluetooth abilita permessi e Bluetooth."
+                )
+            }
             return
         }
 
         _uiState.update {
             it.copy(
                 isScanning = true,
-                statusMessage = "Scansione dispositivi Bluetooth Classic e BLE in corso..."
+                statusMessage = "Scansione dispositivi Bluetooth Classic, BLE e USB FTDI in corso..."
             )
         }
 
@@ -92,18 +116,22 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             onDiscoveryFinished = {
-                _uiState.update {
-                    it.copy(
+                _uiState.update { currentState ->
+                    val combinedList = (usbDevices + currentState.pairedDevices).distinctBy { it.address }
+                    currentState.copy(
                         isScanning = false,
-                        statusMessage = "Scansione completata. ${it.pairedDevices.size} dispositivi trovati."
+                        pairedDevices = combinedList,
+                        statusMessage = "Scansione completata. ${combinedList.size} dispositivi disponibili."
                     )
                 }
             },
             onError = { errMsg ->
-                _uiState.update {
-                    it.copy(
+                _uiState.update { currentState ->
+                    val combinedList = (usbDevices + currentState.pairedDevices).distinctBy { it.address }
+                    currentState.copy(
                         isScanning = false,
-                        statusMessage = "Errore scansione: $errMsg"
+                        pairedDevices = combinedList,
+                        statusMessage = "Scansione completata con errori: $errMsg"
                     )
                 }
             }
@@ -121,7 +149,20 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectDevice(device: BluetoothDeviceItem) {
-        _uiState.update { it.copy(selectedDevice = device) }
+        val targetTransport = if (device.isUsb) {
+            TransportMode.USB_KLINE
+        } else if (_uiState.value.selectedTransportMode == TransportMode.USB_KLINE) {
+            TransportMode.AUTO
+        } else {
+            _uiState.value.selectedTransportMode
+        }
+
+        _uiState.update {
+            it.copy(
+                selectedDevice = device,
+                selectedTransportMode = targetTransport
+            )
+        }
     }
 
     fun selectTransportMode(transportMode: TransportMode) {
@@ -153,16 +194,58 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         bluetoothManager.stopDiscovery()
 
         val selectedDeviceItem = _uiState.value.selectedDevice ?: return
-        val bluetoothDevice = bluetoothManager.getDeviceByAddress(selectedDeviceItem.address) ?: return
 
         benchmarkEngine.clearLogs()
+
+        if (selectedDeviceItem.isUsb) {
+            val driver = usbKLineManager.findUsbDriverForAddress(selectedDeviceItem.address)
+            if (driver == null) {
+                _uiState.update {
+                    it.copy(
+                        status = BenchmarkStatus.Error("Dispositivo USB FTDI non trovato tra i dispositivi collegati."),
+                        statusMessage = "Errore: Cavo USB FTDI non rilevato."
+                    )
+                }
+                return
+            }
+
+            if (!usbKLineManager.hasPermission(driver)) {
+                _uiState.update {
+                    it.copy(
+                        status = BenchmarkStatus.Connecting,
+                        statusMessage = "Richiesta autorizzazione USB per ${selectedDeviceItem.name}... Accetta il popup sullo schermo del telefono."
+                    )
+                }
+
+                usbKLineManager.requestPermission(driver) { granted ->
+                    if (granted) {
+                        launchUsbBenchmarkJob(selectedDeviceItem)
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                status = BenchmarkStatus.Error("Permesso USB negato dall'utente."),
+                                statusMessage = "Permesso USB non concesso per ${selectedDeviceItem.name}."
+                            )
+                        }
+                    }
+                }
+                return
+            }
+
+            launchUsbBenchmarkJob(selectedDeviceItem)
+        } else {
+            launchBluetoothBenchmarkJob(selectedDeviceItem)
+        }
+    }
+
+    private fun launchUsbBenchmarkJob(selectedDeviceItem: BluetoothDeviceItem) {
         _uiState.update {
             it.copy(
                 isScanning = false,
                 currentMetrics = null,
                 exportedCsvPath = null,
                 status = BenchmarkStatus.Connecting,
-                statusMessage = "Inizio benchmark metrologico sequenziale [${it.selectedProfile.label}] (${it.selectedRequestCount} campioni per test)..."
+                statusMessage = "Inizio benchmark USB K-Line [${selectedDeviceItem.name}] (${it.selectedRequestCount} campioni)..."
             )
         }
 
@@ -173,6 +256,90 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
 
             try {
                 val currentConfig = _uiState.value
+
+                val metrics = benchmarkEngine.runUsbKLineBenchmark(
+                    context = getApplication(),
+                    usbDeviceItem = selectedDeviceItem,
+                    targetRequestCount = currentConfig.selectedRequestCount,
+                    timeoutMs = ObdBenchmarkEngine.DEFAULT_TIMEOUT_MS,
+                    onStatusUpdate = { status, msg ->
+                        _uiState.update { it.copy(status = status, statusMessage = msg) }
+                    },
+                    onMetricsUpdate = { metricsUpdate ->
+                        _uiState.update { it.copy(currentMetrics = metricsUpdate) }
+                    }
+                )
+
+                try {
+                    val autoCsvFile = benchmarkEngine.exportMetricsToCsv(getApplication(), metrics)
+                    _uiState.update {
+                        it.copy(
+                            currentMetrics = metrics,
+                            exportedCsvPath = autoCsvFile.absolutePath,
+                            status = BenchmarkStatus.Completed,
+                            statusMessage = "Benchmark completato! CSV salvato: ${autoCsvFile.name}"
+                        )
+                    }
+                } catch (e: Exception) {
+                    _uiState.update {
+                        it.copy(
+                            currentMetrics = metrics,
+                            status = BenchmarkStatus.Completed,
+                            statusMessage = "Benchmark completato! (Errore salvataggio CSV: ${e.message})"
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                _uiState.value.currentMetrics?.let { partialMetrics ->
+                    try {
+                        val autoCsvFile = benchmarkEngine.exportMetricsToCsv(getApplication(), partialMetrics)
+                        _uiState.update { it.copy(exportedCsvPath = autoCsvFile.absolutePath) }
+                    } catch (_: Exception) {}
+                }
+                _uiState.update {
+                    it.copy(
+                        status = BenchmarkStatus.Cancelled,
+                        statusMessage = "Benchmark interrotto dall'utente"
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.value.currentMetrics?.let { partialMetrics ->
+                    try {
+                        val autoCsvFile = benchmarkEngine.exportMetricsToCsv(getApplication(), partialMetrics)
+                        _uiState.update { it.copy(exportedCsvPath = autoCsvFile.absolutePath) }
+                    } catch (_: Exception) {}
+                }
+                _uiState.update {
+                    it.copy(
+                        status = BenchmarkStatus.Error(e.message ?: "Errore di comunicazione USB"),
+                        statusMessage = "Errore USB: ${e.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun launchBluetoothBenchmarkJob(selectedDeviceItem: BluetoothDeviceItem) {
+        _uiState.update {
+            it.copy(
+                isScanning = false,
+                currentMetrics = null,
+                exportedCsvPath = null,
+                status = BenchmarkStatus.Connecting,
+                statusMessage = "Inizio benchmark Bluetooth [${selectedDeviceItem.name}] (${it.selectedRequestCount} campioni)..."
+            )
+        }
+
+        val previousJob = benchmarkJob
+        benchmarkJob = viewModelScope.launch(Dispatchers.IO) {
+            previousJob?.cancel()
+            previousJob?.join()
+
+            try {
+                val currentConfig = _uiState.value
+                val bluetoothDevice = bluetoothManager.getDeviceByAddress(selectedDeviceItem.address)
+                    ?: throw IllegalStateException("Dispositivo Bluetooth ${selectedDeviceItem.name} non trovato.")
+
                 val metrics = benchmarkEngine.runBenchmark(
                     context = getApplication(),
                     device = bluetoothDevice,
@@ -182,12 +349,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     isAbsPumpOffAuthorized = currentConfig.isAbsPumpOffAuthorized,
                     timeoutMs = ObdBenchmarkEngine.DEFAULT_TIMEOUT_MS,
                     onStatusUpdate = { status, msg ->
-                        _uiState.update {
-                            it.copy(
-                                status = status,
-                                statusMessage = msg
-                            )
-                        }
+                        _uiState.update { it.copy(status = status, statusMessage = msg) }
                     },
                     onMetricsUpdate = { metricsUpdate ->
                         _uiState.update { it.copy(currentMetrics = metricsUpdate) }
@@ -279,6 +441,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         bluetoothManager.stopDiscovery()
+        usbKLineManager.unregisterReceiver()
         benchmarkEngine.stop()
     }
 }

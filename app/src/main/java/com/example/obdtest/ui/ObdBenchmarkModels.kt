@@ -16,7 +16,8 @@ enum class SampleStatus {
 enum class TransportMode(val label: String) {
     AUTO("AUTO"),
     CLASSIC_SPP("BT"),
-    BLE_GATT("BT BLE")
+    BLE_GATT("BT BLE"),
+    USB_KLINE("USB K-Line FTDI")
 }
 
 enum class ObdProfile(
@@ -49,7 +50,10 @@ enum class BenchmarkMode(val label: String, val command: String) {
 data class BluetoothDeviceItem(
     val name: String,
     val address: String,
-    val isBle: Boolean = false
+    val isBle: Boolean = false,
+    val isUsb: Boolean = false,
+    val vendorId: Int = 0,
+    val productId: Int = 0
 )
 
 sealed interface BenchmarkStatus {
