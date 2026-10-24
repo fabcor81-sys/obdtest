@@ -39,6 +39,11 @@ enum class ObdProfile(
         label = "ECU ABS Lotus (EBC430 KWP Fast)",
         defaultCommand = "0100\r",
         description = "Sequenza specifica: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5"
+    ),
+    USB_KLINE_DIAG(
+        label = "USB K-Line Diagnostic (1A80)",
+        defaultCommand = "1A80",
+        description = "Modalità USB Diagnostica: FTDI Open -> Fast Init -> StartComm -> Singola 1A80 -> Clean Close"
     )
 }
 

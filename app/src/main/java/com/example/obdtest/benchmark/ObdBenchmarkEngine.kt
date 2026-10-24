@@ -287,6 +287,12 @@ class ObdBenchmarkEngine {
 
                     protocol = "ISO 14230-4 KWP2000 Fast Init (Header 812BF1)"
                 }
+
+                else -> {
+                    log("Inizializzazione profilo generico ELM327...")
+                    elmVersion = "ELM327 Generico"
+                    protocol = "ISO 14230 Fast Init"
+                }
             }
 
             metrics = metrics.copy(
@@ -454,6 +460,7 @@ class ObdBenchmarkEngine {
     suspend fun runUsbKLineBenchmark(
         context: Context,
         usbDeviceItem: com.example.obdtest.ui.BluetoothDeviceItem,
+        obdProfile: ObdProfile = ObdProfile.LOTUS_ABS,
         targetRequestCount: Int = 100,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         onStatusUpdate: (BenchmarkStatus, String) -> Unit,
@@ -487,8 +494,8 @@ class ObdBenchmarkEngine {
             deviceName = usbDeviceItem.name,
             deviceAddress = usbDeviceItem.address,
             effectiveTransport = TransportMode.USB_KLINE,
-            obdProfile = ObdProfile.LOTUS_ABS,
-            targetRequestCount = targetRequestCount,
+            obdProfile = obdProfile,
+            targetRequestCount = if (obdProfile == ObdProfile.USB_KLINE_DIAG) 1 else targetRequestCount,
             timeoutMs = timeoutMs
         )
 
@@ -504,7 +511,7 @@ class ObdBenchmarkEngine {
         val benchmarkStartMs = SystemClock.elapsedRealtime()
 
         try {
-            logUsb("=== BENCHMARK USB K-LINE FTDI LOTUS EBC430 ===")
+            logUsb("=== USB K-LINE FTDI ENGINE [Profilo: ${obdProfile.label}] ===")
             logUsb("Apertura porta seriale FTDI (10400 8N1)...")
             onStatusUpdate(BenchmarkStatus.Connecting, "Apertura porta FTDI ${usbDeviceItem.name}...")
 
@@ -528,11 +535,16 @@ class ObdBenchmarkEngine {
 
             coroutineContext.ensureActive()
 
-            // Requisito 6 & 9: Esclusivamente comandi READ-ONLY (1A80 e 2101) per la prima versione USB
-            val testSequence = listOf(
-                BenchmarkTestDefinition("1. ECU Identification", "1A80", targetRequestCount),
-                BenchmarkTestDefinition("2. Read Data By Local Identifier", "2101", targetRequestCount)
-            )
+            val testSequence = if (obdProfile == ObdProfile.USB_KLINE_DIAG) {
+                listOf(
+                    BenchmarkTestDefinition("1. ECU Identification", "1A80", repetitions = 1, isSingleExecution = true)
+                )
+            } else {
+                listOf(
+                    BenchmarkTestDefinition("1. ECU Identification", "1A80", targetRequestCount),
+                    BenchmarkTestDefinition("2. Read Data By Local Identifier", "2101", targetRequestCount)
+                )
+            }
 
             var lastSampleT3Nanos = SystemClock.elapsedRealtimeNanos()
 
@@ -566,10 +578,6 @@ class ObdBenchmarkEngine {
                         timeoutMs = timeoutMs.toInt()
                     ) { logMsg -> log(logMsg) }
 
-                    val writeDurationMs = (exchangeResult.t1Nanos - exchangeResult.t0Nanos) / 1_000_000.0
-                    val timeToFirstByteMs = if (exchangeResult.t2Nanos > exchangeResult.t1Nanos) (exchangeResult.t2Nanos - exchangeResult.t1Nanos) / 1_000_000.0 else 0.0
-                    val payloadRxMs = if (exchangeResult.tPayloadNanos > exchangeResult.t2Nanos) (exchangeResult.tPayloadNanos - exchangeResult.t2Nanos) / 1_000_000.0 else 0.0
-                    val totalRoundTripMs = (exchangeResult.t3Nanos - exchangeResult.t0Nanos) / 1_000_000.0
                     val interRequestMs = if (currentTestSamples.isNotEmpty()) (exchangeResult.t0Nanos - lastSampleT3Nanos) / 1_000_000.0 else 0.0
                     lastSampleT3Nanos = exchangeResult.t3Nanos
 
@@ -588,15 +596,15 @@ class ObdBenchmarkEngine {
                         testName = testDef.name,
                         t0Nanos = exchangeResult.t0Nanos,
                         t1Nanos = exchangeResult.t1Nanos,
-                        t2Nanos = exchangeResult.t2Nanos,
-                        tPayloadNanos = exchangeResult.tPayloadNanos,
+                        t2Nanos = exchangeResult.tEcuFirstByteNanos,
+                        tPayloadNanos = exchangeResult.tEcuCompleteNanos,
                         t3Nanos = exchangeResult.t3Nanos,
-                        writeDurationMs = writeDurationMs,
-                        timeToFirstByteMs = timeToFirstByteMs,
-                        payloadRxDurationMs = payloadRxMs,
+                        writeDurationMs = exchangeResult.writeDurationMs,
+                        timeToFirstByteMs = exchangeResult.ecuTimeToFirstByteMs,
+                        payloadRxDurationMs = exchangeResult.ecuFrameDurationMs,
                         promptDelayMs = 0.0,
-                        rxDurationMs = timeToFirstByteMs + payloadRxMs,
-                        totalRoundTripMs = totalRoundTripMs,
+                        rxDurationMs = exchangeResult.ecuTimeToFirstByteMs + exchangeResult.ecuFrameDurationMs,
+                        totalRoundTripMs = exchangeResult.totalRoundTripMs,
                         interRequestIntervalMs = interRequestMs,
                         status = sampleStatus,
                         isSuccess = exchangeResult.isSuccess,
@@ -632,7 +640,7 @@ class ObdBenchmarkEngine {
                                 completedRequests = rep,
                                 targetRequests = testDef.repetitions,
                                 currentPidsPerSec = currentPidsSec,
-                                lastLatencyMs = totalRoundTripMs
+                                lastLatencyMs = exchangeResult.totalRoundTripMs
                             ),
                             "Esecuzione ${testDef.name}: $rep/${testDef.repetitions} (${String.format(Locale.US, "%.1f", currentPidsSec)} trans/s)"
                         )
@@ -650,10 +658,14 @@ class ObdBenchmarkEngine {
                 testDurationMs = totalDurationMs,
                 isPartialSession = !isRunning
             )
+            onStatusUpdate(BenchmarkStatus.Completed, "Operazione USB completata con successo!")
             metrics
 
         } finally {
             transport.close()
+            try {
+                connection.close()
+            } catch (_: Exception) {}
         }
     }
 

@@ -471,9 +471,10 @@ fun TestControlCard(
             ) {
                 ObdProfile.entries.forEach { profile ->
                     val shortLabel = when (profile) {
-                        ObdProfile.AT_ONLY -> "AT-Only (ATI)"
+                        ObdProfile.AT_ONLY -> "AT-Only"
                         ObdProfile.GENERIC_AUTO -> "OBD Standard"
                         ObdProfile.LOTUS_ABS -> "Lotus ABS"
+                        ObdProfile.USB_KLINE_DIAG -> "USB Diag"
                     }
                     FilterChip(
                         selected = selectedProfile == profile,

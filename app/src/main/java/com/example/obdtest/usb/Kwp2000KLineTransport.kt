@@ -3,6 +3,7 @@ package com.example.obdtest.usb
 import android.os.SystemClock
 import android.util.Log
 import com.hoho.android.usbserial.driver.UsbSerialPort
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.Locale
 
@@ -63,12 +64,6 @@ data class Kwp2000Frame(
             return (sum and 0xFF).toByte()
         }
 
-        /**
-         * Costruisce un frame KWP2000 ISO 14230-2.
-         * Formato Byte (FMT): Se payload.size <= 63, FMT = 0x80 | payload.size.
-         * Per StartCommunication (1 byte): FMT = 0x81.
-         * Per 1A80 o 2101 (2 byte): FMT = 0x82.
-         */
         fun buildFrame(
             payload: ByteArray,
             targetAddress: Byte = 0x2B.toByte(),
@@ -96,6 +91,10 @@ data class Kwp2000Frame(
             )
         }
 
+        /**
+         * Parsea e valida rigorosamente un frame KWP2000.
+         * Restituisce null se la lunghezza o il checksum non sono validi.
+         */
         fun parseFrame(bytes: ByteArray): Kwp2000Frame? {
             if (bytes.size < 5) return null
             val fmt = bytes[0]
@@ -103,15 +102,19 @@ data class Kwp2000Frame(
             val src = bytes[2]
             val length = (fmt.toInt() and 0x3F)
 
-            if (bytes.size < 4 + length) return null
+            if (length == 0 || bytes.size < 4 + length) return null
 
             val payload = ByteArray(length)
             System.arraycopy(bytes, 3, payload, 0, length)
+
             val expectedChecksum = calculateChecksum(bytes, 3 + length)
             val actualChecksum = bytes[3 + length]
 
             if (expectedChecksum != actualChecksum) {
-                Log.w("KWP_DEBUG", "Checksum KWP2000 non valido: atteso ${expectedChecksum.toHexString()}, ricevuto ${actualChecksum.toHexString()}")
+                try {
+                    Log.w("KWP_DEBUG", "Checksum non valido: calcolato ${expectedChecksum.toHexString()}, ricevuto ${actualChecksum.toHexString()}")
+                } catch (_: Exception) {}
+                return null
             }
 
             return Kwp2000Frame(fmt, tgt, src, payload, actualChecksum)
@@ -124,11 +127,12 @@ fun ByteArray.toHexString(): String {
 }
 
 fun Byte.toHexString(): String {
-    return String.format("%02X", this.toInt() and 0xFF) }
+    return String.format("%02X", this.toInt() and 0xFF)
+}
 
 fun String.hexToByteArray(): ByteArray {
     val clean = this.replace(" ", "").replace("\r", "").replace("\n", "").uppercase(Locale.US)
-    if (clean.length % 2 != 0) return byteArrayOf()
+    if (clean.isEmpty() || clean.length % 2 != 0) return byteArrayOf()
     val bytes = ByteArray(clean.length / 2)
     for (i in bytes.indices) {
         val index = i * 2
@@ -141,14 +145,23 @@ data class KwpExchangeResult(
     val isSuccess: Boolean,
     val statusText: String,
     val sentFrameHex: String,
+    val echoReceivedHex: String,
     val echoFilteredHex: String,
+    val isEchoMatched: Boolean,
     val rawRxHex: String,
     val payloadHex: String,
     val t0Nanos: Long,
     val t1Nanos: Long,
-    val t2Nanos: Long,
-    val tPayloadNanos: Long,
+    val tEchoFirstNanos: Long,
+    val tEchoCompleteNanos: Long,
+    val tEcuFirstByteNanos: Long,
+    val tEcuCompleteNanos: Long,
     val t3Nanos: Long,
+    val writeDurationMs: Double,
+    val echoDurationMs: Double,
+    val ecuTimeToFirstByteMs: Double,
+    val ecuFrameDurationMs: Double,
+    val totalRoundTripMs: Double,
     val kwpFrame: Kwp2000Frame? = null
 )
 
@@ -183,12 +196,12 @@ class Kwp2000KLineTransport(
     }
 
     /**
-     * Esegue la procedura Fast Init KWP2000 (ISO 14230):
-     * 1. Linea K a riposo HIGH (> 300 ms)
-     * 2. Impulso LOW (~25 ms) via setBreak(true)
-     * 3. Impulso HIGH (~25 ms) via setBreak(false)
-     * 4. Transmissione messaggio StartCommunication: 81 [Target] [Source] 81 [CS]
-     * 5. Filtraggio echo e verifica risposta ECU.
+     * Fast Init KWP2000 (ISO 14230):
+     * 1. Linea K Idle HIGH (>300ms)
+     * 2. LOW pulse ~25 ms via setBreak(true)
+     * 3. HIGH pulse ~25 ms via setBreak(false)
+     * 4. Transmissione StartCommunication: 81 [Target] [Source] 81 [CS]
+     * Robustezza: Garantisce che setBreak(false) venga SEMPRE eseguito in un blocco finally.
      */
     fun performFastInit(
         logCallback: ((String) -> Unit)? = null
@@ -199,25 +212,40 @@ class Kwp2000KLineTransport(
         }
 
         state = KwpState.INITIALIZING
-        logCallback?.invoke("[FAST INIT] Avvio sequenza Fast Init (ISO 14230) per ECU Lotus EBC430...")
+        logCallback?.invoke("[FAST INIT] Avvio sequenza Fast Init KWP2000 per ECU Lotus EBC430...")
 
         try {
-            // Bus Idle HIGH > 300ms
+            // Idle HIGH > 300ms
             Thread.sleep(320)
 
             val t0Nanos = SystemClock.elapsedRealtimeNanos()
-            port.setBreak(true)
-            Thread.sleep(25)
-            val tBreakLowNanos = SystemClock.elapsedRealtimeNanos()
-            port.setBreak(false)
-            Thread.sleep(25)
-            val tBreakHighNanos = SystemClock.elapsedRealtimeNanos()
+            var tBreakLowNanos = 0L
+            var tBreakHighNanos = 0L
+
+            try {
+                port.setBreak(true)
+                Thread.sleep(25)
+                tBreakLowNanos = SystemClock.elapsedRealtimeNanos()
+            } finally {
+                try {
+                    port.setBreak(false)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Errore disattivazione BREAK: ${e.message}")
+                }
+                Thread.sleep(25)
+                tBreakHighNanos = SystemClock.elapsedRealtimeNanos()
+            }
 
             val lowDurationMs = (tBreakLowNanos - t0Nanos) / 1_000_000.0
             val highDurationMs = (tBreakHighNanos - tBreakLowNanos) / 1_000_000.0
-            logCallback?.invoke("[FAST INIT] Impulsi misurati: LOW = ${String.format("%.2f", lowDurationMs)}ms, HIGH = ${String.format("%.2f", highDurationMs)}ms")
+            logCallback?.invoke(
+                String.format(
+                    Locale.US,
+                    "[FAST INIT] Impulsi SOFTWARE misurati: LOW = %.2f ms, HIGH = %.2f ms (I tempi software su USB possono presentare jitter)",
+                    lowDurationMs, highDurationMs
+                )
+            )
 
-            // Start Communication Request (Payload 0x81, length 1 -> FMT = 0x81)
             val startCommFrame = Kwp2000Frame.buildFrame(
                 payload = byteArrayOf(0x81.toByte()),
                 targetAddress = targetAddress,
@@ -228,8 +256,8 @@ class Kwp2000KLineTransport(
 
             val result = sendFrameAndReceive(startCommFrame, timeoutMs = 2000)
 
-            logCallback?.invoke("[FAST INIT] RX Echo filtrato: '${result.echoFilteredHex}'")
-            logCallback?.invoke("[FAST INIT] RX Risposta ECU: '${result.rawRxHex}' (Durata t2: ${String.format("%.2f", (result.t2Nanos - result.t1Nanos) / 1_000_000.0)}ms)")
+            logCallback?.invoke("[FAST INIT] RX Echo filtrato: '${result.echoFilteredHex}' (Echo Coerente: ${result.isEchoMatched})")
+            logCallback?.invoke("[FAST INIT] RX Risposta ECU: '${result.rawRxHex}' (TTFB ECU: ${String.format(Locale.US, "%.2f", result.ecuTimeToFirstByteMs)} ms)")
 
             if (result.isSuccess && result.kwpFrame != null) {
                 val respPayload = result.kwpFrame.payload
@@ -241,19 +269,19 @@ class Kwp2000KLineTransport(
             }
 
             state = KwpState.ERROR
-            logCallback?.invoke("[FAST INIT] FAILED: Risposta a StartCommunication non valida o assente. Risposta: '${result.rawRxHex}'")
+            logCallback?.invoke("[FAST INIT] FAILED: Risposta a StartCommunication non valida o assente. Status: ${result.statusText}")
             return false
 
         } catch (e: Exception) {
             state = KwpState.ERROR
-            logCallback?.invoke("[FAST INIT] ERRORE durante l'inizializzazione: ${e.message}")
+            logCallback?.invoke("[FAST INIT] ERRORE durante Fast Init: ${e.message}")
             return false
         }
     }
 
     /**
      * Esegue una richiesta diagnostica di SOLA LETTURA (es. 1A 80 o 21 01).
-     * Sicurezza: Blocca qualsiasi tentativo di inviare comandi di attuazione (es. servizio 0x30).
+     * Sicurezza: Blocca categoricamente comandi di attuazione (Servizio 0x30).
      */
     fun sendDiagnosticReadCommand(
         commandCmdHex: String,
@@ -263,32 +291,33 @@ class Kwp2000KLineTransport(
         val payload = commandCmdHex.hexToByteArray()
 
         if (payload.isEmpty()) {
+            val now = SystemClock.elapsedRealtimeNanos()
             return KwpExchangeResult(
                 isSuccess = false,
-                statusText = "Payload HEX non valido: '$commandCmdHex'",
-                sentFrameHex = "",
-                echoFilteredHex = "",
-                rawRxHex = "",
-                payloadHex = "",
-                t0Nanos = SystemClock.elapsedRealtimeNanos(),
-                t1Nanos = 0, t2Nanos = 0, tPayloadNanos = 0, t3Nanos = SystemClock.elapsedRealtimeNanos()
+                statusText = "INVALID_HEX_PAYLOAD",
+                sentFrameHex = "", echoReceivedHex = "", echoFilteredHex = "", isEchoMatched = false,
+                rawRxHex = "", payloadHex = "",
+                t0Nanos = now, t1Nanos = now, tEchoFirstNanos = now, tEchoCompleteNanos = now,
+                tEcuFirstByteNanos = now, tEcuCompleteNanos = now, t3Nanos = now,
+                writeDurationMs = 0.0, echoDurationMs = 0.0, ecuTimeToFirstByteMs = 0.0,
+                ecuFrameDurationMs = 0.0, totalRoundTripMs = 0.0
             )
         }
 
-        // SICUREZZA: Escludi comandi di attuazione (es. Servizio 0x30) per USB FTDI
         val serviceId = payload[0].toInt() and 0xFF
         if (serviceId == 0x30) {
             val errMsg = "SICUREZZA USB: Il servizio 0x30 (Attuatori ABS) è disabilitato sul trasporto USB K-Line."
             logCallback?.invoke("[SAFETY GUARD] $errMsg")
+            val now = SystemClock.elapsedRealtimeNanos()
             return KwpExchangeResult(
                 isSuccess = false,
-                statusText = errMsg,
-                sentFrameHex = "",
-                echoFilteredHex = "",
-                rawRxHex = "",
-                payloadHex = "",
-                t0Nanos = SystemClock.elapsedRealtimeNanos(),
-                t1Nanos = 0, t2Nanos = 0, tPayloadNanos = 0, t3Nanos = SystemClock.elapsedRealtimeNanos()
+                statusText = "BLOCKED_SERVICE_0X30",
+                sentFrameHex = "", echoReceivedHex = "", echoFilteredHex = "", isEchoMatched = false,
+                rawRxHex = "", payloadHex = "",
+                t0Nanos = now, t1Nanos = now, tEchoFirstNanos = now, tEchoCompleteNanos = now,
+                tEcuFirstByteNanos = now, tEcuCompleteNanos = now, t3Nanos = now,
+                writeDurationMs = 0.0, echoDurationMs = 0.0, ecuTimeToFirstByteMs = 0.0,
+                ecuFrameDurationMs = 0.0, totalRoundTripMs = 0.0
             )
         }
 
@@ -301,12 +330,16 @@ class Kwp2000KLineTransport(
         return sendFrameAndReceive(kwpFrame, timeoutMs)
     }
 
-    private fun sendFrameAndReceive(
+    /**
+     * Invia un frame KWP2000 e riceve la risposta con un UNICO buffer di stream persistente,
+     * senza mai perdere byte tra echo ed ECU response.
+     */
+    fun sendFrameAndReceive(
         frame: Kwp2000Frame,
         timeoutMs: Int
     ): KwpExchangeResult {
         val txBytes = frame.rawBytes
-        val buffer = ByteArray(256)
+        val reqServiceId = if (frame.payload.isNotEmpty()) frame.payload[0].toInt() and 0xFF else 0
 
         val t0Nanos = SystemClock.elapsedRealtimeNanos()
 
@@ -316,64 +349,71 @@ class Kwp2000KLineTransport(
             val t1 = SystemClock.elapsedRealtimeNanos()
             return KwpExchangeResult(
                 isSuccess = false,
-                statusText = "Errore scrittura USB TX: ${e.message}",
+                statusText = "WRITE_ERROR: ${e.message}",
                 sentFrameHex = txBytes.toHexString(),
-                echoFilteredHex = "", rawRxHex = "", payloadHex = "",
-                t0Nanos = t0Nanos, t1Nanos = t1, t2Nanos = t1, tPayloadNanos = t1, t3Nanos = t1
+                echoReceivedHex = "", echoFilteredHex = "", isEchoMatched = false,
+                rawRxHex = "", payloadHex = "",
+                t0Nanos = t0Nanos, t1Nanos = t1, tEchoFirstNanos = t1, tEchoCompleteNanos = t1,
+                tEcuFirstByteNanos = t1, tEcuCompleteNanos = t1, t3Nanos = t1,
+                writeDurationMs = (t1 - t0Nanos) / 1_000_000.0, echoDurationMs = 0.0,
+                ecuTimeToFirstByteMs = 0.0, ecuFrameDurationMs = 0.0,
+                totalRoundTripMs = (t1 - t0Nanos) / 1_000_000.0
             )
         }
 
         val t1Nanos = SystemClock.elapsedRealtimeNanos()
 
-        // Filtraggio Echo K-Line
-        var echoBytesRead = 0
-        val echoBuffer = ByteArray(txBytes.size)
+        val rxStreamBuffer = ByteArrayOutputStream()
+        val tempReadBuffer = ByteArray(256)
 
-        if (isEchoFilterEnabled) {
-            var totalRead = 0
-            val echoDeadline = SystemClock.elapsedRealtime() + timeoutMs
-            while (totalRead < txBytes.size && SystemClock.elapsedRealtime() < echoDeadline) {
-                try {
-                    val readNow = port.read(buffer, timeoutMs.coerceAtMost(200))
-                    if (readNow > 0) {
-                        val countToCopy = Math.min(readNow, txBytes.size - totalRead)
-                        System.arraycopy(buffer, 0, echoBuffer, totalRead, countToCopy)
-                        totalRead += countToCopy
-                    }
-                } catch (_: Exception) {
-                    break
-                }
-            }
-            echoBytesRead = totalRead
-        }
+        var tEchoFirstNanos = 0L
+        var tEchoCompleteNanos = 0L
+        var tEcuFirstByteNanos = 0L
+        var tEcuCompleteNanos = 0L
 
-        val echoFilteredHex = echoBuffer.copyOf(echoBytesRead).toHexString()
+        val deadlineMs = SystemClock.elapsedRealtime() + timeoutMs
 
-        // Lettura Risposta ECU
-        val rxBuffer = ByteArray(256)
-        var rxLength = 0
-        var t2Nanos = 0L
-        var tPayloadNanos = 0L
+        val expectedEchoSize = if (isEchoFilterEnabled) txBytes.size else 0
 
-        val rxDeadline = SystemClock.elapsedRealtime() + timeoutMs
-
-        while (SystemClock.elapsedRealtime() < rxDeadline) {
+        while (SystemClock.elapsedRealtime() < deadlineMs) {
             try {
-                val readNow = port.read(buffer, 100)
-                if (readNow > 0) {
-                    if (t2Nanos == 0L) {
-                        t2Nanos = SystemClock.elapsedRealtimeNanos()
-                    }
-                    System.arraycopy(buffer, 0, rxBuffer, rxLength, readNow)
-                    rxLength += readNow
+                val readNow = port.read(tempReadBuffer, 100)
+                val nowNanos = SystemClock.elapsedRealtimeNanos()
 
-                    // Verifica se il frame KWP2000 è completo
-                    if (rxLength >= 5) {
-                        val fmt = rxBuffer[0]
+                if (readNow > 0) {
+                    if (tEchoFirstNanos == 0L) {
+                        tEchoFirstNanos = nowNanos
+                    }
+
+                    rxStreamBuffer.write(tempReadBuffer, 0, readNow)
+                    val currentStream = rxStreamBuffer.toByteArray()
+
+                    // Rileva completamento echo
+                    if (expectedEchoSize > 0 && currentStream.size >= expectedEchoSize && tEchoCompleteNanos == 0L) {
+                        tEchoCompleteNanos = nowNanos
+                    }
+
+                    // Rileva arrivo primo byte ECU
+                    if (currentStream.size > expectedEchoSize && tEcuFirstByteNanos == 0L) {
+                        tEcuFirstByteNanos = nowNanos
+                    }
+
+                    // Isolamento byte ECU per verifica completamento frame
+                    val ecuBytes = if (expectedEchoSize > 0 && currentStream.size >= expectedEchoSize) {
+                        currentStream.copyOfRange(expectedEchoSize, currentStream.size)
+                    } else if (expectedEchoSize == 0) {
+                        currentStream
+                    } else {
+                        byteArrayOf()
+                    }
+
+                    if (ecuBytes.size >= 5) {
+                        val fmt = ecuBytes[0]
                         val payloadLen = (fmt.toInt() and 0x3F)
-                        val expectedTotalLen = 4 + payloadLen
-                        if (rxLength >= expectedTotalLen) {
-                            tPayloadNanos = SystemClock.elapsedRealtimeNanos()
+                        val totalExpectedFrameLen = 4 + payloadLen
+
+                        if (ecuBytes.size >= totalExpectedFrameLen) {
+                            tEcuCompleteNanos = nowNanos
                             break
                         }
                     }
@@ -384,45 +424,114 @@ class Kwp2000KLineTransport(
         }
 
         val t3Nanos = SystemClock.elapsedRealtimeNanos()
-        if (t2Nanos == 0L) t2Nanos = t3Nanos
-        if (tPayloadNanos == 0L) tPayloadNanos = t3Nanos
 
-        val rawRxBytes = rxBuffer.copyOf(rxLength)
-        val rawRxHex = rawRxBytes.toHexString()
+        if (tEchoFirstNanos == 0L) tEchoFirstNanos = t3Nanos
+        if (tEchoCompleteNanos == 0L) tEchoCompleteNanos = tEchoFirstNanos
+        if (tEcuFirstByteNanos == 0L) tEcuFirstByteNanos = t3Nanos
+        if (tEcuCompleteNanos == 0L) tEcuCompleteNanos = t3Nanos
 
-        val parsedFrame = Kwp2000Frame.parseFrame(rawRxBytes)
+        val fullStream = rxStreamBuffer.toByteArray()
+
+        // Estrazione Echo
+        val echoReceivedBytes = if (expectedEchoSize > 0 && fullStream.size >= expectedEchoSize) {
+            fullStream.copyOfRange(0, expectedEchoSize)
+        } else if (expectedEchoSize > 0 && fullStream.isNotEmpty()) {
+            fullStream.copyOfRange(0, Math.min(fullStream.size, expectedEchoSize))
+        } else {
+            byteArrayOf()
+        }
+
+        val isEchoMatched = isEchoFilterEnabled && echoReceivedBytes.contentEquals(txBytes)
+        if (isEchoFilterEnabled && !isEchoMatched && echoReceivedBytes.isNotEmpty()) {
+            Log.w(TAG, "ANOMALIA ECHO K-LINE: Atteso '${txBytes.toHexString()}', Ricevuto '${echoReceivedBytes.toHexString()}'")
+        }
+
+        // Estrazione Byte ECU
+        val ecuResponseBytes = if (expectedEchoSize > 0 && fullStream.size >= expectedEchoSize) {
+            fullStream.copyOfRange(expectedEchoSize, fullStream.size)
+        } else if (!isEchoFilterEnabled) {
+            fullStream
+        } else {
+            byteArrayOf()
+        }
+
+        val rawRxHex = ecuResponseBytes.toHexString()
+        val echoReceivedHex = echoReceivedBytes.toHexString()
+
+        // Validazione Strict Frame KWP2000
+        val parsedFrame = Kwp2000Frame.parseFrame(ecuResponseBytes)
+
+        val writeDurationMs = (t1Nanos - t0Nanos) / 1_000_000.0
+        val echoDurationMs = if (tEchoCompleteNanos > tEchoFirstNanos) (tEchoCompleteNanos - tEchoFirstNanos) / 1_000_000.0 else 0.0
+        val ecuTtfbMs = if (tEcuFirstByteNanos > t1Nanos) (tEcuFirstByteNanos - t1Nanos) / 1_000_000.0 else 0.0
+        val ecuFrameDurationMs = if (tEcuCompleteNanos > tEcuFirstByteNanos) (tEcuCompleteNanos - tEcuFirstByteNanos) / 1_000_000.0 else 0.0
+        val totalRttMs = (t3Nanos - t0Nanos) / 1_000_000.0
 
         if (parsedFrame == null) {
-            val status = if (rxLength == 0) "TIMEOUT: Nessuna risposta dalla ECU" else "RISPOSTA TRONCATA O INVALIDA"
+            val statusText = when {
+                fullStream.isEmpty() -> "TIMEOUT: Nessuna risposta USB/K-Line"
+                ecuResponseBytes.isEmpty() -> "NO_ECU_RESPONSE: Ricevuto solo echo"
+                else -> "CORRUPT_FRAME_OR_CHECKSUM_ERROR"
+            }
+
             return KwpExchangeResult(
                 isSuccess = false,
-                statusText = status,
+                statusText = statusText,
                 sentFrameHex = txBytes.toHexString(),
-                echoFilteredHex = echoFilteredHex,
+                echoReceivedHex = echoReceivedHex,
+                echoFilteredHex = if (isEchoMatched) echoReceivedHex else "MISMATCH",
+                isEchoMatched = isEchoMatched,
                 rawRxHex = rawRxHex,
                 payloadHex = "",
-                t0Nanos = t0Nanos, t1Nanos = t1Nanos, t2Nanos = t2Nanos, tPayloadNanos = tPayloadNanos, t3Nanos = t3Nanos
+                t0Nanos = t0Nanos, t1Nanos = t1Nanos,
+                tEchoFirstNanos = tEchoFirstNanos, tEchoCompleteNanos = tEchoCompleteNanos,
+                tEcuFirstByteNanos = tEcuFirstByteNanos, tEcuCompleteNanos = tEcuCompleteNanos,
+                t3Nanos = t3Nanos,
+                writeDurationMs = writeDurationMs,
+                echoDurationMs = echoDurationMs,
+                ecuTimeToFirstByteMs = ecuTtfbMs,
+                ecuFrameDurationMs = ecuFrameDurationMs,
+                totalRoundTripMs = totalRttMs,
+                kwpFrame = null
             )
         }
 
-        val payloadHex = parsedFrame.payload.toHexString()
-        val isSuccess = parsedFrame.payload.isNotEmpty() && (parsedFrame.payload[0].toInt() and 0xFF) != 0x7F
+        // Verifica Indirizzi e Servizio Risposta
+        val respService = if (parsedFrame.payload.isNotEmpty()) parsedFrame.payload[0].toInt() and 0xFF else 0
+        val isNegativeResp = respService == 0x7F
+        val expectedPosService = (reqServiceId + 0x40) and 0xFF
 
-        val statusText = if (isSuccess) {
-            "SUCCESS"
-        } else {
-            val nrc = if (parsedFrame.payload.size >= 3) String.format("%02X", parsedFrame.payload[2].toInt() and 0xFF) else "N/D"
-            "NEGATIVE RESPONSE (NRC: $nrc)"
+        val isServiceValid = (respService == expectedPosService) || isNegativeResp
+
+        val isSuccess = isServiceValid && !isNegativeResp
+
+        val statusText = when {
+            isSuccess -> "SUCCESS"
+            isNegativeResp -> {
+                val nrc = if (parsedFrame.payload.size >= 3) String.format("%02X", parsedFrame.payload[2].toInt() and 0xFF) else "N/D"
+                "NEGATIVE_RESPONSE (NRC: $nrc)"
+            }
+            else -> "UNEXPECTED_SERVICE_RESPONSE (Atteso $expectedPosService, Ricevuto $respService)"
         }
 
         return KwpExchangeResult(
             isSuccess = isSuccess,
             statusText = statusText,
             sentFrameHex = txBytes.toHexString(),
-            echoFilteredHex = echoFilteredHex,
+            echoReceivedHex = echoReceivedHex,
+            echoFilteredHex = if (isEchoMatched) echoReceivedHex else echoReceivedHex,
+            isEchoMatched = isEchoMatched,
             rawRxHex = rawRxHex,
-            payloadHex = payloadHex,
-            t0Nanos = t0Nanos, t1Nanos = t1Nanos, t2Nanos = t2Nanos, tPayloadNanos = tPayloadNanos, t3Nanos = t3Nanos,
+            payloadHex = parsedFrame.payload.toHexString(),
+            t0Nanos = t0Nanos, t1Nanos = t1Nanos,
+            tEchoFirstNanos = tEchoFirstNanos, tEchoCompleteNanos = tEchoCompleteNanos,
+            tEcuFirstByteNanos = tEcuFirstByteNanos, tEcuCompleteNanos = tEcuCompleteNanos,
+            t3Nanos = t3Nanos,
+            writeDurationMs = writeDurationMs,
+            echoDurationMs = echoDurationMs,
+            ecuTimeToFirstByteMs = ecuTtfbMs,
+            ecuFrameDurationMs = ecuFrameDurationMs,
+            totalRoundTripMs = totalRttMs,
             kwpFrame = parsedFrame
         )
     }

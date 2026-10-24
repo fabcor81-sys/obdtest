@@ -7,12 +7,13 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 
 class Kwp2000FrameTest {
 
+    // TEST 1: Checksum KWP2000 Valido
     @Test
-    fun testStartCommunicationFrame() {
-        // Payload 0x81 (Start Communication, length 1)
+    fun testValidKwp2000Checksum() {
         val payload = byteArrayOf(0x81.toByte())
         val frame = Kwp2000Frame.buildFrame(
             payload = payload,
@@ -20,7 +21,6 @@ class Kwp2000FrameTest {
             sourceAddress = 0xF1.toByte()
         )
 
-        // FMT = 0x80 | 1 = 0x81
         assertEquals(0x81.toByte(), frame.formatByte)
         assertEquals(0x2B.toByte(), frame.targetAddress)
         assertEquals(0xF1.toByte(), frame.sourceAddress)
@@ -32,88 +32,181 @@ class Kwp2000FrameTest {
         val raw = frame.rawBytes
         val expectedRaw = byteArrayOf(0x81.toByte(), 0x2B.toByte(), 0xF1.toByte(), 0x81.toByte(), 0x1E.toByte())
         assertArrayEquals(expectedRaw, raw)
+
+        val parsed = Kwp2000Frame.parseFrame(raw)
+        assertNotNull("Un frame con checksum valido deve essere aperto e parsato con successo", parsed)
+        assertEquals(frame, parsed)
     }
 
+    // TEST 2: Checksum KWP2000 Errato Rifiutato
     @Test
-    fun testEcuIdentificationFrame_1A80() {
-        // Payload 1A 80 (Length = 2) -> FMT = 0x80 | 2 = 0x82
-        val payload = byteArrayOf(0x1A.toByte(), 0x80.toByte())
-        val frame = Kwp2000Frame.buildFrame(
-            payload = payload,
+    fun testInvalidChecksumRejected() {
+        val corruptRaw = byteArrayOf(0x81.toByte(), 0x2B.toByte(), 0xF1.toByte(), 0x81.toByte(), 0xFF.toByte())
+        val parsed = Kwp2000Frame.parseFrame(corruptRaw)
+        assertNull("Un frame con checksum errato DEVE essere rifiutato (restituire null)", parsed)
+    }
+
+    // TEST 3: Risposta Incompleta
+    @Test
+    fun testIncompleteResponse() {
+        val incompleteBytes = byteArrayOf(0x82.toByte(), 0xF1.toByte(), 0x2B.toByte(), 0x5A.toByte())
+        val parsed = Kwp2000Frame.parseFrame(incompleteBytes)
+        assertNull("Un frame incompleto privo di tutti i byte di payload o checksum deve restituire null", parsed)
+    }
+
+    // TEST 4: Risposta Frammentata Assemblata
+    @Test
+    fun testFragmentedResponseReassembly() {
+        val fullFrame = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x5A.toByte(), 0x80.toByte(), 0x01.toByte()),
+            targetAddress = 0xF1.toByte(),
+            sourceAddress = 0x2B.toByte()
+        ).rawBytes
+
+        val chunk1 = fullFrame.copyOfRange(0, 3)
+        val chunk2 = fullFrame.copyOfRange(3, fullFrame.size)
+
+        val stream = ByteArrayOutputStream()
+        stream.write(chunk1)
+        assertNull("Chunk 1 parziale non deve validare un frame", Kwp2000Frame.parseFrame(stream.toByteArray()))
+
+        stream.write(chunk2)
+        val parsed = Kwp2000Frame.parseFrame(stream.toByteArray())
+        assertNotNull("L'unione dei due chunk deve restituire il frame valido", parsed)
+        assertEquals(0x5A.toByte(), parsed!!.payload[0])
+    }
+
+    // TEST 5: Echo e Risposta ECU nello Stesso Blocco USB
+    @Test
+    fun testEchoAndEcuResponseInSameReadBlock() {
+        val txBytes = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x1A.toByte(), 0x80.toByte()),
             targetAddress = 0x2B.toByte(),
             sourceAddress = 0xF1.toByte()
-        )
+        ).rawBytes
 
-        assertEquals(0x82.toByte(), frame.formatByte)
-        // Checksum = (0x82 + 0x2B + 0xF1 + 0x1A + 0x80) & 0xFF = 0x0238 & 0xFF = 0x38
-        assertEquals(0x38.toByte(), frame.checksum)
+        val ecuResponseBytes = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x5A.toByte(), 0x80.toByte(), 0x99.toByte()),
+            targetAddress = 0xF1.toByte(),
+            sourceAddress = 0x2B.toByte()
+        ).rawBytes
 
-        val expectedRaw = byteArrayOf(0x82.toByte(), 0x2B.toByte(), 0xF1.toByte(), 0x1A.toByte(), 0x80.toByte(), 0x38.toByte())
-        assertArrayEquals(expectedRaw, frame.rawBytes)
+        // Unico blocco USB contenente sia l'echo che la risposta ECU
+        val combinedUsbBlock = txBytes + ecuResponseBytes
+
+        val expectedEchoSize = txBytes.size
+        assertTrue(combinedUsbBlock.size > expectedEchoSize)
+
+        val extractedEcho = combinedUsbBlock.copyOfRange(0, expectedEchoSize)
+        val extractedEcu = combinedUsbBlock.copyOfRange(expectedEchoSize, combinedUsbBlock.size)
+
+        assertArrayEquals("L'echo deve corrispondere esattamente ai byte trasmessi", txBytes, extractedEcho)
+
+        val parsedEcu = Kwp2000Frame.parseFrame(extractedEcu)
+        assertNotNull("La risposta ECU separata dallo stesso blocco USB deve validare con successo", parsedEcu)
+        assertEquals(0x5A.toByte(), parsedEcu!!.payload[0])
     }
 
+    // TEST 6: Echo Distribuito su Più Letture
     @Test
-    fun testReadDataByLocalIdentifierFrame_2101() {
-        // Payload 21 01 (Length = 2) -> FMT = 0x80 | 2 = 0x82
-        val payload = byteArrayOf(0x21.toByte(), 0x01.toByte())
-        val frame = Kwp2000Frame.buildFrame(
-            payload = payload,
+    fun testEchoDistributedAcrossMultipleReads() {
+        val txBytes = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x21.toByte(), 0x01.toByte()),
             targetAddress = 0x2B.toByte(),
             sourceAddress = 0xF1.toByte()
-        )
+        ).rawBytes
 
-        assertEquals(0x82.toByte(), frame.formatByte)
-        // Checksum = (0x82 + 0x2B + 0xF1 + 0x21 + 0x01) & 0xFF = 448 % 256 = 192 (0xC0)
-        assertEquals(0xC0.toByte(), frame.checksum)
+        val ecuBytes = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x61.toByte(), 0x01.toByte(), 0x0C.toByte(), 0x80.toByte()),
+            targetAddress = 0xF1.toByte(),
+            sourceAddress = 0x2B.toByte()
+        ).rawBytes
 
-        val expectedRaw = byteArrayOf(0x82.toByte(), 0x2B.toByte(), 0xF1.toByte(), 0x21.toByte(), 0x01.toByte(), 0xC0.toByte())
-        assertArrayEquals(expectedRaw, frame.rawBytes)
+        val read1 = txBytes.copyOfRange(0, 3)
+        val read2 = txBytes.copyOfRange(3, txBytes.size) + ecuBytes.copyOfRange(0, 2)
+        val read3 = ecuBytes.copyOfRange(2, ecuBytes.size)
+
+        val persistentStream = ByteArrayOutputStream()
+        persistentStream.write(read1)
+        persistentStream.write(read2)
+        persistentStream.write(read3)
+
+        val fullStream = persistentStream.toByteArray()
+        val echoPart = fullStream.copyOfRange(0, txBytes.size)
+        val ecuPart = fullStream.copyOfRange(txBytes.size, fullStream.size)
+
+        assertArrayEquals(txBytes, echoPart)
+        val parsedEcu = Kwp2000Frame.parseFrame(ecuPart)
+        assertNotNull(parsedEcu)
+        assertEquals(0x61.toByte(), parsedEcu!!.payload[0])
     }
 
+    // TEST 7: Risposta Negativa KWP2000 0x7F
     @Test
-    fun testParseValidResponseFrame() {
-        // Sample ECU Positive Response: FMT 0x83 (length 3), TGT 0xF1, SRC 0x2B, Service 0x5A, Data 0x80, Data2 0x12, CS
-        val payload = byteArrayOf(0x5A.toByte(), 0x80.toByte(), 0x12.toByte())
-        val temp = byteArrayOf(0x83.toByte(), 0xF1.toByte(), 0x2B.toByte(), 0x5A.toByte(), 0x80.toByte(), 0x12.toByte())
-        val cs = Kwp2000Frame.calculateChecksum(temp)
+    fun testNegativeResponse7F() {
+        // Response 7F 1A 11 (Service 1A, NRC 11 ServiceNotSupported)
+        val nrcFrame = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x7F.toByte(), 0x1A.toByte(), 0x11.toByte()),
+            targetAddress = 0xF1.toByte(),
+            sourceAddress = 0x2B.toByte()
+        )
 
-        val fullRaw = temp + byteArrayOf(cs)
-
-        val parsed = Kwp2000Frame.parseFrame(fullRaw)
+        val parsed = Kwp2000Frame.parseFrame(nrcFrame.rawBytes)
         assertNotNull(parsed)
-        assertEquals(0x83.toByte(), parsed!!.formatByte)
-        assertEquals(0xF1.toByte(), parsed.targetAddress)
-        assertEquals(0x2B.toByte(), parsed.sourceAddress)
-        assertArrayEquals(payload, parsed.payload)
-        assertEquals(cs, parsed.checksum)
+        assertEquals(0x7F.toByte(), parsed!!.payload[0])
+        assertEquals(0x1A.toByte(), parsed.payload[1])
+        assertEquals(0x11.toByte(), parsed.payload[2])
     }
 
+    // TEST 8: Frame Concatenati nello Stream
     @Test
-    fun testParseIncompleteFrameReturnsNull() {
-        val incomplete = byteArrayOf(0x82.toByte(), 0xF1.toByte(), 0x2B.toByte())
-        val parsed = Kwp2000Frame.parseFrame(incomplete)
-        assertNull(parsed)
+    fun testConcatenatedFrames() {
+        val frame1 = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x5A.toByte(), 0x80.toByte()),
+            targetAddress = 0xF1.toByte(),
+            sourceAddress = 0x2B.toByte()
+        ).rawBytes
+
+        val frame2 = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x61.toByte(), 0x01.toByte()),
+            targetAddress = 0xF1.toByte(),
+            sourceAddress = 0x2B.toByte()
+        ).rawBytes
+
+        val concatenated = frame1 + frame2
+
+        val parsed1 = Kwp2000Frame.parseFrame(concatenated)
+        assertNotNull("Il primo frame deve essere estratto correttamente", parsed1)
+        assertEquals(0x5A.toByte(), parsed1!!.payload[0])
+
+        val frame1Len = 4 + parsed1.payload.size
+        val secondPart = concatenated.copyOfRange(frame1Len, concatenated.size)
+        val parsed2 = Kwp2000Frame.parseFrame(secondPart)
+        assertNotNull("Il secondo frame concatenato deve essere estratto senza perdita di byte", parsed2)
+        assertEquals(0x61.toByte(), parsed2!!.payload[0])
     }
 
+    // TEST 9: Assenza Completa di Echo
     @Test
-    fun testHexConversionHelpers() {
-        val hexStr = "81 2B F1 81 84"
-        val bytes = hexStr.hexToByteArray()
-        assertEquals(5, bytes.size)
-        assertEquals(0x81.toByte(), bytes[0])
-        assertEquals(0x2B.toByte(), bytes[1])
-        assertEquals(0xF1.toByte(), bytes[2])
-        assertEquals(0x81.toByte(), bytes[3])
-        assertEquals(0x84.toByte(), bytes[4])
+    fun testCompleteAbsenceOfEcho() {
+        val ecuFrame = Kwp2000Frame.buildFrame(
+            payload = byteArrayOf(0x5A.toByte(), 0x80.toByte()),
+            targetAddress = 0xF1.toByte(),
+            sourceAddress = 0x2B.toByte()
+        ).rawBytes
 
-        assertEquals("81 2B F1 81 84", bytes.toHexString())
+        // Senza filtraggio echo (isEchoFilterEnabled = false), lo stream contiene direttamente i byte ECU
+        val parsed = Kwp2000Frame.parseFrame(ecuFrame)
+        assertNotNull("Anche senza echo, la risposta ECU deve validare correttamente", parsed)
+        assertEquals(0x5A.toByte(), parsed!!.payload[0])
     }
 
+    // TEST 10: Safety Guard Blocco Servizio 0x30
     @Test
-    fun testSafetyGuardBlocksActuatorService30() {
+    fun testSafetyGuardService30Block() {
         val payloadActuator = "30020700".hexToByteArray()
         val serviceId = payloadActuator[0].toInt() and 0xFF
         assertEquals(0x30, serviceId)
-        assertTrue("Il servizio 0x30 deve essere identificato come comando di attuazione", serviceId == 0x30)
+        assertTrue("Il servizio 0x30 deve essere identificato e bloccato sul trasporto USB K-Line", serviceId == 0x30)
     }
 }

@@ -260,6 +260,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 val metrics = benchmarkEngine.runUsbKLineBenchmark(
                     context = getApplication(),
                     usbDeviceItem = selectedDeviceItem,
+                    obdProfile = currentConfig.selectedProfile,
                     targetRequestCount = currentConfig.selectedRequestCount,
                     timeoutMs = ObdBenchmarkEngine.DEFAULT_TIMEOUT_MS,
                     onStatusUpdate = { status, msg ->
