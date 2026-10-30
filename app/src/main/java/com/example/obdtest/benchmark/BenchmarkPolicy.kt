@@ -48,16 +48,16 @@ object BenchmarkReadOnlyPlan {
     fun bluetooth(profile: ObdProfile, samples: Int): List<BenchmarkTestDefinition> {
         require(samples in 1..1000)
         return when (profile) {
-            ObdProfile.AT_ONLY -> listOf(BenchmarkTestDefinition("ELM identification", "ATI\\r", samples))
+            ObdProfile.AT_ONLY -> listOf(BenchmarkTestDefinition("ELM identification", "ATI\r", samples))
             ObdProfile.GENERIC_AUTO -> listOf(
-                BenchmarkTestDefinition("ELM identification", "ATI\\r", samples),
-                BenchmarkTestDefinition("Generic OBD PID 0100", "0100\\r", samples)
+                BenchmarkTestDefinition("ELM identification", "ATI\r", samples),
+                BenchmarkTestDefinition("Generic OBD PID 0100", "0100\r", samples)
             )
             ObdProfile.LOTUS_ABS -> listOf(
-                BenchmarkTestDefinition("ELM identification", "ATI\\r", samples),
-                BenchmarkTestDefinition("ECU identification", "1A80\\r", samples),
-                BenchmarkTestDefinition("Battery voltage", "2101\\r", samples),
-                BenchmarkTestDefinition("ABS status", "2102\\r", samples)
+                BenchmarkTestDefinition("ELM identification", "ATI\r", samples),
+                BenchmarkTestDefinition("ECU identification", "1A80\r", samples),
+                BenchmarkTestDefinition("Battery voltage", "2101\r", samples),
+                BenchmarkTestDefinition("ABS status", "2102\r", samples)
             )
             ObdProfile.USB_KLINE_DIAG -> error("USB K-Line profile cannot be used over Bluetooth")
         }
