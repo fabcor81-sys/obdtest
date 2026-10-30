@@ -19,12 +19,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - name: Ensure Android SDK platform 37
+      - name: Ensure Android SDK platform 36
         run: |
           SDK_MANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f -print -quit)"
           test -n "$SDK_MANAGER"
           yes | "$SDK_MANAGER" --licenses >/dev/null || true
-          "$SDK_MANAGER" --install "platforms;android-37"
+          "$SDK_MANAGER" --install "platforms;android-36"
       - name: Compile app, tests, and execute unit tests
         run: |
           chmod +x ./gradlew
