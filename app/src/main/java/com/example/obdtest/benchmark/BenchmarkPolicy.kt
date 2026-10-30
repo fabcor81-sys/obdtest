@@ -41,11 +41,11 @@ class MeasurementClock(private val nowNanos: () -> Long) {
 }
 
 /**
- * Read-only benchmark plans. A generic profile cannot run KWP Lotus-specific
- * services, and NO profile issues an ABS actuator command (30 xx).
+ * Explicit benchmark plans. Only the Lotus profile can optionally include
+ * the single ABS Pump OFF command; generic OBD benchmarks remain read-only.
  */
-object BenchmarkReadOnlyPlan {
-    fun bluetooth(profile: ObdProfile, samples: Int): List<BenchmarkTestDefinition> {
+object BenchmarkTestPlan {
+    fun bluetooth(profile: ObdProfile, samples: Int, allowPumpOff: Boolean = false): List<BenchmarkTestDefinition> {
         require(samples in 1..1000)
         return when (profile) {
             ObdProfile.AT_ONLY -> listOf(BenchmarkTestDefinition("ELM identification", "ATI\r", samples))
@@ -58,7 +58,12 @@ object BenchmarkReadOnlyPlan {
                 BenchmarkTestDefinition("ECU identification", "1A80\r", samples),
                 BenchmarkTestDefinition("Battery voltage", "2101\r", samples),
                 BenchmarkTestDefinition("ABS status", "2102\r", samples)
-            )
+            ) + if (allowPumpOff) listOf(
+                BenchmarkTestDefinition(
+                    "ABS Pump OFF (optional)", "30020700\r", 1,
+                    isSingleExecution = true, requiresAuthorization = true
+                )
+            ) else emptyList()
             ObdProfile.USB_KLINE_DIAG -> error("USB K-Line profile cannot be used over Bluetooth")
         }
     }
@@ -76,6 +81,6 @@ object BenchmarkReadOnlyPlan {
         }
     }
 
-    fun isReadOnly(plan: List<BenchmarkTestDefinition>): Boolean =
-        plan.none { it.command.filterNot(Char::isWhitespace).startsWith("30") }
+    fun containsActuatorCommand(plan: List<BenchmarkTestDefinition>): Boolean =
+        plan.any { it.command.filterNot(Char::isWhitespace).startsWith("30") }
 }
