@@ -1,7 +1,10 @@
 package com.example.obdtest.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,6 +37,10 @@ val RacingTextSecondary = Color(0xFFBDBDBD)
 val RacingError = Color(0xFFE53935)
 val RacingSuccess = Color(0xFF00E676)
 
+private enum class BenchmarkPage(val title: String) {
+    DEVICE("1. Device"), TEST("2. Benchmark"), RESULTS("3. Results")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ObdBenchmarkScreen(
@@ -44,7 +52,7 @@ fun ObdBenchmarkScreen(
     onSelectDevice: (BluetoothDeviceItem) -> Unit,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
-    onToggleAbsPumpOffAuthorization: (Boolean) -> Unit,
+    onSelectRequestCount: (Int) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
     onSaveComparison: () -> Unit,
@@ -52,6 +60,19 @@ fun ObdBenchmarkScreen(
     onExportCsv: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var pageIndex by rememberSaveable { mutableIntStateOf(0) }
+    val page = BenchmarkPage.entries[pageIndex.coerceIn(0, BenchmarkPage.entries.lastIndex)]
+    val running = BenchmarkUiPolicy.isBusy(uiState.status)
+    val usableDevice = BenchmarkUiPolicy.canRun(
+        uiState.selectedDevice, uiState.hasPermissions, uiState.isBluetoothEnabled
+    )
+    val validProfile = BenchmarkUiPolicy.supportsProfile(uiState.selectedDevice, uiState.selectedProfile)
+
+    BackHandler(enabled = pageIndex > 0) {
+        // Never abandon the benchmark flow while a command is running.
+        if (!running) pageIndex -= 1
+    }
+
     Scaffold(
         containerColor = RacingBackground,
         topBar = {
@@ -59,29 +80,22 @@ fun ObdBenchmarkScreen(
                 title = {
                     Column {
                         Text(
-                            text = "OBD2 Benchmark Metrologico",
+                            "OBD TEST  •  BENCHMARK",
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 18.sp,
                             color = RacingYellow
                         )
                         Text(
-                            text = com.example.obdtest.AppVersion.BUILD_TAG,
-                            style = MaterialTheme.typography.bodySmall,
+                            com.example.obdtest.AppVersion.BUILD_TAG,
                             fontSize = 11.sp,
                             color = RacingTextSecondary
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = RacingSurface
-                ),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = RacingSurface),
                 actions = {
-                    IconButton(onClick = onRefreshDevices) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "Aggiorna Dispositivi",
-                            tint = RacingYellow
-                        )
+                    IconButton(onClick = onRefreshDevices, enabled = !running) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh devices", tint = RacingYellow)
                     }
                 }
             )
@@ -89,74 +103,216 @@ fun ObdBenchmarkScreen(
         modifier = modifier
     ) { innerPadding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(RacingBackground)
-                .padding(innerPadding)
-                .padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.fillMaxSize().background(RacingBackground)
+                .padding(innerPadding).padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (!uiState.hasPermissions) {
-                PermissionRequiredCard(onRequestPermissions = onRequestPermissions)
-            } else if (!uiState.isBluetoothEnabled) {
-                BluetoothDisabledCard(onRefreshDevices = onRefreshDevices)
-            } else {
-                // 1. Selettore Dispositivo Bluetooth Compattato e Perfettamente Leggibile
-                DeviceSelectorCard(
-                    devices = uiState.pairedDevices,
-                    selectedDevice = uiState.selectedDevice,
-                    isScanning = uiState.isScanning,
-                    onSelectDevice = onSelectDevice,
-                    onRefreshDevices = onRefreshDevices,
-                    onStartScanDevices = onStartScanDevices,
-                    onStopScanDevices = onStopScanDevices,
-                    isTesting = uiState.status !is BenchmarkStatus.Idle &&
-                            uiState.status !is BenchmarkStatus.Completed &&
-                            uiState.status !is BenchmarkStatus.Cancelled &&
-                            uiState.status !is BenchmarkStatus.Error
-                )
-
-                // 2. Controlli Trasporto, Profilo, Flag Pompa ABS OFF e Pulsante Unico Avvio
-                TestControlCard(
-                    status = uiState.status,
-                    statusMessage = uiState.statusMessage,
-                    selectedTransportMode = uiState.selectedTransportMode,
-                    selectedProfile = uiState.selectedProfile,
-                    isAbsPumpOffAuthorized = uiState.isAbsPumpOffAuthorized,
-                    isDeviceSelected = uiState.selectedDevice != null,
-                    onSelectTransportMode = onSelectTransportMode,
-                    onSelectProfile = onSelectProfile,
-                    onToggleAbsPumpOffAuthorization = onToggleAbsPumpOffAuthorization,
-                    onStartTest = onStartTest,
-                    onStopTest = onStopTest
-                )
-
-                // 3. Scheda Risultati & Riepilogo Sequenza Test
-                uiState.currentMetrics?.let { metrics ->
-                    CurrentMetricsCard(
-                        metrics = metrics,
-                        status = uiState.status,
-                        onSaveComparison = onSaveComparison,
-                        onExportCsv = onExportCsv
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                BenchmarkPage.entries.forEachIndexed { index, item ->
+                    FilterChip(
+                        selected = pageIndex == index,
+                        onClick = { if (!running) pageIndex = index },
+                        enabled = !running,
+                        label = {
+                            Text(
+                                item.title,
+                                fontSize = 12.sp,
+                                fontWeight = if (pageIndex == index) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = RacingYellow,
+                            selectedLabelColor = RacingBackground,
+                            containerColor = RacingSurfaceSecondary,
+                            labelColor = RacingText
+                        ),
+                        modifier = Modifier.weight(1f)
                     )
                 }
+            }
 
-                // 4. Sezione Confronto (es. Norauto vs vLinker)
-                uiState.savedComparisonMetrics?.let { savedMetrics ->
-                    uiState.currentMetrics?.let { currentMetrics ->
-                        ComparisonCard(
-                            baselineMetrics = savedMetrics,
-                            currentMetrics = currentMetrics,
-                            onClearComparison = onClearComparison
-                        )
+            if (running) {
+                Surface(color = RacingSurfaceSecondary, shape = RoundedCornerShape(8.dp)) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("BENCHMARK RUNNING — ${uiState.statusMessage}",
+                            color = RacingYellow, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        val phase = uiState.status
+                        if (phase is BenchmarkStatus.RunningTestSequence && phase.targetRequests > 0) {
+                            Text(
+                                "Test ${phase.currentTestIndex}/${phase.totalTests}: ${phase.testName} — " +
+                                    "${phase.completedRequests}/${phase.targetRequests}",
+                                color = RacingText, fontSize = 13.sp
+                            )
+                            LinearProgressIndicator(
+                                progress = { (phase.completedRequests.toFloat() / phase.targetRequests).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = RacingYellow
+                            )
+                        }
+                        Button(
+                            onClick = onStopTest,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = RacingError, contentColor = RacingText)
+                        ) {
+                            Icon(Icons.Default.Stop, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("STOP BENCHMARK", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
-
-                // 5. Console Terminal / Logs
-                ConsoleLogsCard(
-                    logs = uiState.logs,
-                    modifier = Modifier.weight(1f)
+            } else if (uiState.status is BenchmarkStatus.Error) {
+                Text(
+                    "ERROR: ${uiState.statusMessage}",
+                    color = RacingError, fontSize = 12.sp, fontWeight = FontWeight.SemiBold
                 )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                when (page) {
+                    BenchmarkPage.DEVICE -> {
+                        Text("Choose the adapter", color = RacingYellow,
+                            fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        Text(
+                            "USB K-Line works independently of Bluetooth. Bluetooth scanning requires " +
+                                "permissions and an enabled radio.",
+                            color = RacingTextSecondary, fontSize = 13.sp
+                        )
+                        if (!uiState.hasPermissions) {
+                            PermissionRequiredCard(onRequestPermissions)
+                        } else if (!uiState.isBluetoothEnabled) {
+                            BluetoothDisabledCard(onRefreshDevices)
+                        }
+                        DeviceSelectorCard(
+                            devices = uiState.pairedDevices,
+                            selectedDevice = uiState.selectedDevice,
+                            isScanning = uiState.isScanning,
+                            onSelectDevice = onSelectDevice,
+                            onRefreshDevices = onRefreshDevices,
+                            onStartScanDevices = onStartScanDevices,
+                            onStopScanDevices = onStopScanDevices,
+                            isTesting = running
+                        )
+                        Text(
+                            if (usableDevice) "Selected device ready: ${uiState.selectedDevice?.name}"
+                            else if (uiState.selectedDevice == null) "Select an adapter to continue."
+                            else "Bluetooth is unavailable. Select USB or grant Bluetooth access.",
+                            color = if (usableDevice) RacingSuccess else RacingTextSecondary,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    BenchmarkPage.TEST -> {
+                        Text("Configure benchmark", color = RacingYellow,
+                            fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        Text(
+                            "Selected: ${uiState.selectedDevice?.name ?: "No device"}" +
+                                "  •  ${if (uiState.selectedDevice?.isUsb == true) "USB K-Line" else "Bluetooth"}",
+                            color = RacingTextSecondary, fontSize = 13.sp
+                        )
+                        TestControlCard(
+                            status = uiState.status,
+                            statusMessage = uiState.statusMessage,
+                            selectedTransportMode = uiState.selectedTransportMode,
+                            selectedProfile = uiState.selectedProfile,
+                            selectedRequestCount = uiState.selectedRequestCount,
+                            isUsbDevice = uiState.selectedDevice?.isUsb == true,
+                            isDeviceSelected = usableDevice && validProfile,
+                            onSelectTransportMode = onSelectTransportMode,
+                            onSelectProfile = onSelectProfile,
+                            onSelectRequestCount = onSelectRequestCount,
+                            onStartTest = {
+                                if (usableDevice && validProfile && !running) {
+                                    onStartTest()
+                                    pageIndex = BenchmarkPage.RESULTS.ordinal
+                                }
+                            },
+                            onStopTest = onStopTest
+                        )
+                        Surface(color = RacingSurfaceSecondary, shape = RoundedCornerShape(8.dp)) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text("READ-ONLY BENCHMARK", color = RacingYellow, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "OBD Test measures adapter and ECU response latency. ABS actuator " +
+                                        "commands, including Pump OFF (30 02 07 00), are excluded. " +
+                                        "Use a dedicated, validated service procedure for actuator control.",
+                                    color = RacingTextSecondary, fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    BenchmarkPage.RESULTS -> {
+                        Text("Benchmark results", color = RacingYellow,
+                            fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        if (uiState.currentMetrics == null) {
+                            Text(
+                                if (running) "Connecting and initializing; measurements will appear here."
+                                else "No measurements yet. Go to Benchmark and run a test.",
+                                color = RacingTextSecondary, fontSize = 14.sp
+                            )
+                        }
+                        uiState.currentMetrics?.let { metrics ->
+                            CurrentMetricsCard(
+                                metrics = metrics,
+                                status = uiState.status,
+                                onSaveComparison = onSaveComparison,
+                                onExportCsv = onExportCsv
+                            )
+                        }
+                        uiState.savedComparisonMetrics?.let { baseline ->
+                            uiState.currentMetrics?.let { current ->
+                                ComparisonCard(
+                                    baselineMetrics = baseline,
+                                    currentMetrics = current,
+                                    onClearComparison = onClearComparison
+                                )
+                            } ?: Text(
+                                "Saved reference: ${baseline.deviceName}. Start a new benchmark to compare.",
+                                color = RacingTextSecondary, fontSize = 12.sp
+                            )
+                        }
+                        ConsoleLogsCard(logs = uiState.logs, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+
+            if (!running) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (pageIndex > 0) {
+                        OutlinedButton(
+                            onClick = { pageIndex-- },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = RacingYellow)
+                        ) { Text("BACK") }
+                    }
+                    if (page == BenchmarkPage.DEVICE) {
+                        Button(
+                            onClick = { pageIndex = BenchmarkPage.TEST.ordinal },
+                            enabled = usableDevice,
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = RacingYellow, contentColor = RacingBackground
+                            )
+                        ) { Text("NEXT: BENCHMARK") }
+                    } else if (page == BenchmarkPage.TEST && uiState.currentMetrics != null) {
+                        Button(
+                            onClick = { pageIndex = BenchmarkPage.RESULTS.ordinal },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = RacingYellow, contentColor = RacingBackground
+                            )
+                        ) { Text("VIEW RESULTS") }
+                    }
+                }
             }
         }
     }
