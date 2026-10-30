@@ -28,27 +28,27 @@ enum class ObdProfile(
     AT_ONLY(
         label = "AT-Only (ATI)",
         defaultCommand = "ATI\r",
-        description = "Latenza chip/Bluetooth dell'adattatore (senza ECU)"
+        description = "Adapter/Bluetooth-chip latency (no ECU)"
     ),
     GENERIC_AUTO(
-        label = "OBD Generico (Auto Protocol)",
+        label = "Generic OBD2 (auto protocol)",
         defaultCommand = "0100\r",
-        description = "Inizializzazione standard OBD2 AT SP 0"
+        description = "Standard OBD2 initialization (AT SP 0)"
     ),
     LOTUS_ABS(
         label = "ECU ABS Lotus (EBC430 KWP Fast)",
         defaultCommand = "0100\r",
-        description = "Sequenza specifica: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5"
+        description = "Specific setup: ATZ -> AT L1 -> AT SH 812BF1 -> AT WM 812BF13E -> AT SP 5"
     ),
     USB_KLINE_DIAG(
         label = "USB K-Line Diagnostic (1A80)",
         defaultCommand = "1A80",
-        description = "Modalità USB Diagnostica: FTDI Open -> Fast Init -> StartComm -> Singola 1A80 -> Clean Close"
+        description = "USB diagnostic mode: FTDI open -> Fast Init -> StartComm -> one 1A80 -> clean close"
     )
 }
 
 enum class BenchmarkMode(val label: String, val command: String) {
-    AT_ONLY("Adattatore AT-Only (ATI)", "ATI\r"),
+    AT_ONLY("Adapter AT-only (ATI)", "ATI\r"),
     OBD_PID("ECU / OBD2 (PID 0100)", "0100\r")
 }
 
@@ -190,7 +190,7 @@ data class ObdUiState(
     val isBluetoothEnabled: Boolean = true,
     val hasPermissions: Boolean = false,
     val status: BenchmarkStatus = BenchmarkStatus.Idle,
-    val statusMessage: String = "Seleziona un dispositivo, modalità e avvia il benchmark metrologico",
+    val statusMessage: String = "Select an adapter, choose a profile, and start a benchmark",
     val currentMetrics: BenchmarkMetrics? = null,
     val savedComparisonMetrics: BenchmarkMetrics? = null,
     val logs: List<String> = emptyList(),
