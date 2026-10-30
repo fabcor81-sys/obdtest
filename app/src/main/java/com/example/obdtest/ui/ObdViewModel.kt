@@ -213,10 +213,14 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // OBD Test is deliberately read-only. Actuator commands belong in
-    // dedicated service software, not a latency benchmarking sequence.
+    // Optional one-shot authorization for the Lotus-only Pump OFF test.
     fun toggleAbsPumpOffAuthorization(authorized: Boolean) {
-        _uiState.update { it.copy(isAbsPumpOffAuthorized = false) }
+        _uiState.update {
+            if (BenchmarkUiPolicy.isBusy(it.status) ||
+                it.selectedProfile != ObdProfile.LOTUS_ABS ||
+                it.selectedDevice?.isUsb != false) it.copy(isAbsPumpOffAuthorized = false)
+            else it.copy(isAbsPumpOffAuthorized = authorized)
+        }
     }
 
     fun startBenchmarkTest() {
@@ -236,6 +240,8 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         }
         bluetoothManager.stopDiscovery()
         benchmarkEngine.clearLogs()
+        val authorizePumpOffThisRun = current.selectedProfile == ObdProfile.LOTUS_ABS &&
+            !selectedDeviceItem.isUsb && current.isAbsPumpOffAuthorized
         _uiState.update { it.copy(isAbsPumpOffAuthorized = false) }
 
         if (selectedDeviceItem.isUsb) {
@@ -275,7 +281,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
 
             launchUsbBenchmarkJob(selectedDeviceItem)
         } else {
-            launchBluetoothBenchmarkJob(selectedDeviceItem)
+            launchBluetoothBenchmarkJob(selectedDeviceItem, authorizePumpOffThisRun)
         }
     }
 
@@ -361,7 +367,10 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun launchBluetoothBenchmarkJob(selectedDeviceItem: BluetoothDeviceItem) {
+    private fun launchBluetoothBenchmarkJob(
+        selectedDeviceItem: BluetoothDeviceItem,
+        allowPumpOffThisRun: Boolean
+    ) {
         _uiState.update {
             it.copy(
                 isScanning = false,
@@ -388,7 +397,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     transportMode = currentConfig.selectedTransportMode,
                     obdProfile = currentConfig.selectedProfile,
                     targetRequestCount = currentConfig.selectedRequestCount,
-                    isAbsPumpOffAuthorized = false,
+                    isAbsPumpOffAuthorized = allowPumpOffThisRun,
                     timeoutMs = ObdBenchmarkEngine.DEFAULT_TIMEOUT_MS,
                     onStatusUpdate = { status, msg ->
                         _uiState.update { it.copy(status = status, statusMessage = msg) }
