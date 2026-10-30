@@ -179,7 +179,7 @@ class ObdBenchmarkEngine {
         try {
             log("=== OBD2 BENCHMARK ENGINE ${com.example.obdtest.AppVersion.FULL_VERSION_STRING} ===")
             log("Connessione a ${device.name ?: device.address} via ${effectiveTransport.label}...")
-            onStatusUpdate(BenchmarkStatus.Connecting, "Connessione in corso a ${device.name ?: device.address} (${effectiveTransport.label})...")
+            onStatusUpdate(BenchmarkStatus.Connecting, "Connecting to ${device.name ?: device.address} (${effectiveTransport.label})...")
 
             if (isBleMode) {
                 connectGattDevice(context.applicationContext, device)
@@ -200,7 +200,7 @@ class ObdBenchmarkEngine {
             coroutineContext.ensureActive()
             log("Connessione stabilita con successo via ${if (isBleMode) "BLE GATT" else "Classic SPP"}!")
 
-            onStatusUpdate(BenchmarkStatus.Initializing, "Inizializzazione (${obdProfile.label})...")
+            onStatusUpdate(BenchmarkStatus.Initializing, "Initializing (${obdProfile.label})...")
 
             val initLogEntries = mutableListOf<String>()
 
@@ -295,7 +295,7 @@ class ObdBenchmarkEngine {
 
             // FASE DI RISCALDAMENTO PRELIMINARE
             log("=== INIZIO FASE DI RISCALDAMENTO ($warmupCount comandi preliminari) ===")
-            onStatusUpdate(BenchmarkStatus.Warmup, "Riscaldamento in corso ($warmupCount comandi preliminari)...")
+            onStatusUpdate(BenchmarkStatus.Warmup, "Warming up ($warmupCount preliminary commands)...")
 
             var warmupFirstLatency = 0.0
             var warmupSuccesses = 0
@@ -394,7 +394,7 @@ class ObdBenchmarkEngine {
 
             log("=== BENCHMARK COMPLETATO ===")
             onMetricsUpdate(metrics)
-            onStatusUpdate(BenchmarkStatus.Completed, "Benchmark metrologico completato!")
+            onStatusUpdate(BenchmarkStatus.Completed, "Benchmark completed successfully.")
 
             metrics
         } catch (e: CancellationException) {
@@ -402,7 +402,7 @@ class ObdBenchmarkEngine {
             val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
             val partialMetrics = calculateAggregateMetrics(metrics, allSamples, testSummaries, currentDurationMs, isPartial = true)
             onMetricsUpdate(partialMetrics)
-            onStatusUpdate(BenchmarkStatus.Cancelled, "Benchmark interrotto dall'utente.")
+            onStatusUpdate(BenchmarkStatus.Cancelled, "Benchmark stopped by user.")
             throw e
         } catch (e: Exception) {
             val errLog = "ERRORE APPLICATIVO CRITICO: ${e.javaClass.simpleName} - ${e.message}\n${Log.getStackTraceString(e)}"
@@ -411,7 +411,7 @@ class ObdBenchmarkEngine {
             val currentDurationMs = SystemClock.elapsedRealtime() - connectionStartMs
             val partialMetrics = calculateAggregateMetrics(metrics, allSamples, testSummaries, currentDurationMs, isPartial = true)
             onMetricsUpdate(partialMetrics)
-            onStatusUpdate(BenchmarkStatus.Error(e.message ?: "Errore di comunicazione"), "Errore: ${e.message}")
+            onStatusUpdate(BenchmarkStatus.Error(e.message ?: "Communication error"), "Error: ${e.message}")
             throw e
         } finally {
             closeConnection()
@@ -474,12 +474,12 @@ class ObdBenchmarkEngine {
         try {
             logUsb("=== USB K-LINE FTDI ENGINE [Profilo: ${obdProfile.label}] ===")
             logUsb("Apertura porta seriale FTDI (10400 8N1)...")
-            onStatusUpdate(BenchmarkStatus.Connecting, "Apertura porta FTDI ${usbDeviceItem.name}...")
+            onStatusUpdate(BenchmarkStatus.Connecting, "Opening FTDI port for ${usbDeviceItem.name}...")
 
             serialPort.open(connection)
             transport.openPort(10400)
 
-            onStatusUpdate(BenchmarkStatus.Initializing, "Esecuzione Fast Init ISO 14230 (K-Line)...")
+            onStatusUpdate(BenchmarkStatus.Initializing, "Performing ISO 14230 K-Line Fast Init...")
 
             val initOk = transport.performFastInit { msg -> logUsb(msg) }
 
@@ -610,7 +610,7 @@ class ObdBenchmarkEngine {
                 testDurationMs = totalDurationMs,
                 isPartialSession = !isRunning
             )
-            onStatusUpdate(BenchmarkStatus.Completed, "Operazione USB completata con successo!")
+            onStatusUpdate(BenchmarkStatus.Completed, "USB benchmark completed successfully.")
             metrics
 
         } finally {
