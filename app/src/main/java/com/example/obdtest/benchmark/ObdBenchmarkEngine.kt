@@ -164,7 +164,7 @@ class ObdBenchmarkEngine {
             obdProfile = obdProfile,
             targetRequestCount = targetRequestCount,
             warmupRequestCount = warmupCount,
-            isAbsPumpOffAuthorized = false,
+            isAbsPumpOffAuthorized = obdProfile == ObdProfile.LOTUS_ABS && isAbsPumpOffAuthorized,
             timeoutMs = timeoutMs
         )
 
@@ -174,7 +174,7 @@ class ObdBenchmarkEngine {
 
         // Test plans are strictly read-only. ABS Pump OFF is intentionally
         // excluded from OBD Test; never treat it as a latency benchmark.
-        val testSequence = BenchmarkReadOnlyPlan.bluetooth(obdProfile, targetRequestCount)
+        val testSequence = BenchmarkTestPlan.bluetooth(obdProfile, targetRequestCount, isAbsPumpOffAuthorized)
 
         try {
             log("=== OBD2 BENCHMARK ENGINE ${com.example.obdtest.AppVersion.FULL_VERSION_STRING} ===")
@@ -332,6 +332,13 @@ class ObdBenchmarkEngine {
             for ((testIdx, testDef) in activeTestSequence.withIndex()) {
                 if (!isRunning || currentSessionId != activeSessionId) break
                 coroutineContext.ensureActive()
+                // Defense in depth: never execute an actuator command unless
+                // this exact Lotus benchmark run was explicitly authorized.
+                if (testDef.requiresAuthorization &&
+                    !(obdProfile == ObdProfile.LOTUS_ABS && isAbsPumpOffAuthorized)
+                ) {
+                    throw IllegalStateException("ABS Pump OFF not authorized for this benchmark")
+                }
 
 
                 log("=== AVVIO TEST ${testIdx + 1}/${activeTestSequence.size}: ${testDef.name} (${testDef.command.trim()}) ===")
@@ -489,7 +496,7 @@ class ObdBenchmarkEngine {
 
             coroutineContext.ensureActive()
 
-            val testSequence = BenchmarkReadOnlyPlan.usb(obdProfile, targetRequestCount)
+            val testSequence = BenchmarkTestPlan.usb(obdProfile, targetRequestCount)
 
             var lastSampleT3Nanos = SystemClock.elapsedRealtimeNanos()
 
