@@ -342,13 +342,13 @@ fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
                 tint = RacingError
             )
             Text(
-                text = "Permessi Bluetooth e Posizione Richiesti",
+                text = "Bluetooth permissions required",
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp,
                 color = RacingText
             )
             Text(
-                text = "L'app richiede l'accesso al Bluetooth per scansionare e comunicare con gli adattatori OBD2.",
+                text = "Allow Bluetooth access to scan and connect to wireless OBD adapters. USB K-Line does not require Bluetooth.",
                 textAlign = TextAlign.Center,
                 fontSize = 12.sp,
                 color = RacingTextSecondary
@@ -360,7 +360,7 @@ fun PermissionRequiredCard(onRequestPermissions: () -> Unit) {
                     contentColor = RacingBackground
                 )
             ) {
-                Text("Concedi Permessi", fontWeight = FontWeight.Bold)
+                Text("GRANT PERMISSIONS", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -386,13 +386,13 @@ fun BluetoothDisabledCard(onRefreshDevices: () -> Unit) {
                 tint = RacingYellow
             )
             Text(
-                text = "Bluetooth Spento",
+                text = "Bluetooth is disabled",
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp,
                 color = RacingText
             )
             Text(
-                text = "Attiva il Bluetooth nelle impostazioni del tuo smartphone per proseguire.",
+                text = "Enable Bluetooth to use a wireless adapter. USB K-Line works without Bluetooth.",
                 textAlign = TextAlign.Center,
                 fontSize = 12.sp,
                 color = RacingTextSecondary
@@ -404,7 +404,7 @@ fun BluetoothDisabledCard(onRefreshDevices: () -> Unit) {
                     contentColor = RacingBackground
                 )
             ) {
-                Text("Ricontrolla", fontWeight = FontWeight.Bold)
+                Text("CHECK AGAIN", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -437,8 +437,8 @@ fun DeviceSelectorCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "SELEZIONE DISPOSITIVO (BLUETOOTH / USB FTDI)",
-                    fontSize = 10.sp,
+                    text = "ADAPTER SELECTION • BLUETOOTH / USB",
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.ExtraBold,
                     color = RacingYellow
                 )
@@ -457,7 +457,7 @@ fun DeviceSelectorCard(
                             color = RacingError
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Ferma Scansione", fontSize = 10.sp, color = RacingError)
+                        Text("Stop scan", fontSize = 10.sp, color = RacingError)
                     } else {
                         Icon(
                             Icons.AutoMirrored.Filled.BluetoothSearching,
@@ -466,7 +466,7 @@ fun DeviceSelectorCard(
                             tint = RacingYellow
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Scansiona", fontSize = 10.sp, color = RacingYellow)
+                        Text("Scan", fontSize = 10.sp, color = RacingYellow)
                     }
                 }
             }
@@ -480,7 +480,7 @@ fun DeviceSelectorCard(
                 OutlinedTextField(
                     value = selectedDevice?.let {
                         if (it.isUsb) "${it.name}\n${it.address}" else "${it.name}\nMAC: ${it.address}"
-                    } ?: "Nessun dispositivo selezionato",
+                    } ?: "No adapter selected",
                     onValueChange = {},
                     readOnly = true,
                     enabled = !isTesting,
@@ -496,9 +496,9 @@ fun DeviceSelectorCard(
                         )
                     },
                     textStyle = LocalTextStyle.current.copy(
-                        fontSize = 11.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
-                        lineHeight = 14.sp
+                        lineHeight = 17.sp
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = RacingText,
@@ -521,7 +521,7 @@ fun DeviceSelectorCard(
                 ) {
                     if (devices.isEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Nessun dispositivo trovato", color = RacingTextSecondary, fontSize = 11.sp) },
+                            text = { Text("No adapters found", color = RacingTextSecondary, fontSize = 11.sp) },
                             onClick = {
                                 expanded = false
                                 onRefreshDevices()
@@ -1018,6 +1018,7 @@ fun ConsoleLogsCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(min = 48.dp)
                     .clickable { expanded = !expanded },
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -1032,22 +1033,18 @@ fun ConsoleLogsCard(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "CONSOLE LOGS (${logs.size})",
-                        fontSize = 10.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = RacingYellow
                     )
                 }
 
-                IconButton(
-                    onClick = { expanded = !expanded },
-                    modifier = Modifier.size(20.dp)
-                ) {
-                    Icon(
-                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = null,
-                        tint = RacingYellow
-                    )
-                }
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse console" else "Expand console",
+                    modifier = Modifier.size(24.dp),
+                    tint = RacingYellow
+                )
             }
 
             AnimatedVisibility(visible = expanded) {
