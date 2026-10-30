@@ -759,149 +759,139 @@ fun CurrentMetricsCard(
     onSaveComparison: () -> Unit,
     onExportCsv: () -> Unit
 ) {
+    var showCommandDetails by remember { mutableStateOf(false) }
+    val finished = status is BenchmarkStatus.Completed || status is BenchmarkStatus.Cancelled ||
+        status is BenchmarkStatus.Error
+    val validBaseline = status is BenchmarkStatus.Completed &&
+        !metrics.isPartialSession && metrics.successCount > 0
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = RacingSurface
-        )
+        colors = CardDefaults.cardColors(containerColor = RacingSurface)
     ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
+        Column(Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("RESULTS — ${metrics.deviceName}",
+                color = RacingYellow, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "${metrics.effectiveTransport.label} • ${metrics.obdProfile.label}" +
+                    if (metrics.isPartialSession) " • PARTIAL SESSION" else "",
+                color = if (metrics.isPartialSession) RacingError else RacingTextSecondary,
+                fontSize = 12.sp
+            )
+            Text("Adapter: ${metrics.elmVersion}", color = RacingTextSecondary, fontSize = 12.sp)
+            if (metrics.isPartialSession) {
+                Surface(color = RacingSurfaceSecondary, shape = RoundedCornerShape(8.dp)) {
                     Text(
-                        text = "RISULTATI SEQUENZA TEST: ${metrics.deviceName} ${if (metrics.isPartialSession) "[PARZIALE]" else ""}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = RacingYellow
-                    )
-                    Text(
-                        text = "Trasporto: ${metrics.effectiveTransport.label} | Profilo: ${metrics.obdProfile.label}",
-                        fontSize = 9.sp,
-                        color = RacingTextSecondary
+                        "The test was interrupted. Metrics reflect collected samples only; " +
+                            "do not use them as a comparison baseline.",
+                        color = RacingError, fontSize = 13.sp,
+                        modifier = Modifier.padding(12.dp)
                     )
                 }
-
-                Text(
-                    text = metrics.elmVersion,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = RacingYellow
+            }
+            HorizontalDivider(color = RacingSurfaceSecondary)
+            MetricItem(
+                label = "MEAN LATENCY (SUCCESSFUL RESPONSES)",
+                value = if (metrics.successCount > 0)
+                    "${String.format(Locale.US, "%.1f", metrics.avgLatencyMs)} ms" else "N/A",
+                subValue = if (metrics.successCount > 0)
+                    "Min ${String.format(Locale.US, "%.1f", metrics.minLatencyMs)} ms • " +
+                        "Max ${String.format(Locale.US, "%.1f", metrics.maxLatencyMs)} ms"
+                else "No successful ECU/adapter responses"
+            )
+            MetricItem(
+                label = "SUCCESS RATE",
+                value = "${String.format(Locale.US, "%.1f", metrics.successRatePercent)}%",
+                subValue = "${metrics.successCount} / ${metrics.totalCommandsSent} successful • " +
+                    "${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} commands/s"
+            )
+            HorizontalDivider(color = RacingSurfaceSecondary)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetricItemSmall(
+                    "P50", if (metrics.successCount > 0)
+                        "${String.format(Locale.US, "%.1f", metrics.p50Ms)} ms" else "N/A",
+                    Modifier.weight(1f)
+                )
+                MetricItemSmall(
+                    "P95", if (metrics.successCount > 0)
+                        "${String.format(Locale.US, "%.1f", metrics.p95Ms)} ms" else "N/A",
+                    Modifier.weight(1f)
+                )
+                MetricItemSmall(
+                    "P99", if (metrics.successCount > 0)
+                        "${String.format(Locale.US, "%.1f", metrics.p99Ms)} ms" else "N/A",
+                    Modifier.weight(1f)
                 )
             }
-
-            HorizontalDivider(color = RacingSurfaceSecondary)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceAround
-            ) {
-                MetricItem(
-                    label = "LATENZA MEDIA (SUCCESSI)",
-                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.avgLatencyMs)} ms" else "N/D",
-                    subValue = if (metrics.successCount > 0) "Min: ${String.format(Locale.US, "%.1f", metrics.minLatencyMs)}ms | Max: ${String.format(Locale.US, "%.1f", metrics.maxLatencyMs)}ms" else "Nessun successo"
-                )
-
-                MetricItem(
-                    label = "TASSO DI SUCCESSO",
-                    value = "${String.format(Locale.US, "%.1f", metrics.successRatePercent)}%",
-                    subValue = "POS: ${metrics.successCount}/${metrics.totalCommandsSent} (${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} PID/s)"
-                )
-            }
-
-            HorizontalDivider(color = RacingSurfaceSecondary)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceAround
-            ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MetricItemSmall(
-                    label = "P50 (MEDIANA)",
-                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.p50Ms)} ms" else "N/D"
+                    "STD. DEV.",
+                    if (metrics.successCount > 1) "${String.format(Locale.US, "%.1f", metrics.stdDevMs)} ms" else "N/A",
+                    Modifier.weight(1f)
                 )
                 MetricItemSmall(
-                    label = "P95",
-                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.p95Ms)} ms" else "N/D"
-                )
-                MetricItemSmall(
-                    label = "P99",
-                    value = if (metrics.successCount > 0) "${String.format(Locale.US, "%.1f", metrics.p99Ms)} ms" else "N/D"
-                )
-                MetricItemSmall(
-                    label = "DEV. STD (σ)",
-                    value = if (metrics.successCount > 1) "${String.format(Locale.US, "%.1f", metrics.stdDevMs)} ms" else "N/D"
-                )
-                MetricItemSmall(
-                    label = "JITTER",
-                    value = if (metrics.successCount > 1) "${String.format(Locale.US, "%.1f", metrics.jitterMs)} ms" else "N/D"
+                    "JITTER",
+                    if (metrics.successCount > 1) "${String.format(Locale.US, "%.1f", metrics.jitterMs)} ms" else "N/A",
+                    Modifier.weight(1f)
                 )
             }
 
             if (metrics.testSummaries.isNotEmpty()) {
                 HorizontalDivider(color = RacingSurfaceSecondary)
-                Text(
-                    text = "DETTAGLIO RISULTATI PER COMANDO:",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = RacingYellow
-                )
-
-                metrics.testSummaries.forEach { s ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "${s.testName} (${s.commandSent})",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = RacingText,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Text(
-                            text = if (s.isSingleExecution) s.singleExecutionResult else "P50: ${String.format(Locale.US, "%.1f", s.p50Ms)}ms | POS: ${s.positiveResponses}/${s.samplesExecuted}",
-                            fontSize = 10.sp,
-                            color = if (s.positiveResponses > 0) RacingSuccess else RacingError
-                        )
+                TextButton(
+                    onClick = { showCommandDetails = !showCommandDetails },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                ) {
+                    Text(
+                        if (showCommandDetails) "HIDE COMMAND DETAILS" else
+                            "SHOW COMMAND DETAILS (${metrics.testSummaries.size})",
+                        color = RacingYellow, fontWeight = FontWeight.Bold, fontSize = 12.sp
+                    )
+                }
+                if (showCommandDetails) {
+                    metrics.testSummaries.forEach { summary ->
+                        Surface(color = RacingSurfaceSecondary, shape = RoundedCornerShape(8.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("${summary.testName} • ${summary.commandSent}",
+                                    color = RacingText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (summary.isSingleExecution) summary.singleExecutionResult
+                                    else "P50 ${String.format(Locale.US, "%.1f", summary.p50Ms)} ms • " +
+                                        "${summary.positiveResponses}/${summary.samplesExecuted} positive",
+                                    fontSize = 12.sp,
+                                    color = if (summary.positiveResponses > 0) RacingSuccess else RacingTextSecondary
+                                )
+                            }
+                        }
                     }
                 }
             }
-
-            if (status is BenchmarkStatus.Completed || status is BenchmarkStatus.Cancelled) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
+            if (finished) {
+                Row(modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = onExportCsv,
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = RacingYellow
-                        ),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).heightIn(min = 50.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = RacingYellow)
                     ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Esporta CSV", fontSize = 11.sp)
+                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("EXPORT CSV", fontSize = 12.sp)
                     }
-
                     Button(
                         onClick = onSaveComparison,
+                        enabled = validBaseline,
+                        modifier = Modifier.weight(1f).heightIn(min = 50.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = RacingYellow,
                             contentColor = RacingBackground
-                        ),
-                        modifier = Modifier.weight(1f)
+                        )
                     ) {
-                        Icon(Icons.Default.Bookmark, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Salva Riferimento", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.Bookmark, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("SAVE BASELINE", fontSize = 12.sp)
                     }
                 }
             }
@@ -911,42 +901,18 @@ fun CurrentMetricsCard(
 
 @Composable
 fun MetricItem(label: String, value: String, subValue: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = label,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
-            color = RacingTextSecondary
-        )
-        Text(
-            text = value,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.ExtraBold,
-            color = RacingYellow
-        )
-        Text(
-            text = subValue,
-            fontSize = 9.sp,
-            color = RacingText
-        )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
+        Text(value, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = RacingYellow)
+        Text(subValue, fontSize = 12.sp, color = RacingText)
     }
 }
 
 @Composable
-fun MetricItemSmall(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = label,
-            fontSize = 8.sp,
-            fontWeight = FontWeight.Bold,
-            color = RacingTextSecondary
-        )
-        Text(
-            text = value,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            color = RacingText
-        )
+fun MetricItemSmall(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
+        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = RacingText)
     }
 }
 
