@@ -265,13 +265,19 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 usbKLineManager.requestPermission(driver) { granted ->
-                    if (granted) {
+                    // A permission sheet can remain open after STOP was pressed.
+                    // Never start a cancelled benchmark from that late callback.
+                    if (_uiState.value.status !is BenchmarkStatus.Connecting ||
+                        _uiState.value.selectedDevice?.address != selectedDeviceItem.address
+                    ) {
+                        // Stale permission result: ignore.
+                    } else if (granted) {
                         launchUsbBenchmarkJob(selectedDeviceItem)
                     } else {
                         _uiState.update {
                             it.copy(
-                                status = BenchmarkStatus.Error("Permesso USB negato dall'utente."),
-                                statusMessage = "Permesso USB non concesso per ${selectedDeviceItem.name}."
+                                status = BenchmarkStatus.Error("USB permission denied."),
+                                statusMessage = "USB permission was not granted for ${selectedDeviceItem.name}."
                             )
                         }
                     }
