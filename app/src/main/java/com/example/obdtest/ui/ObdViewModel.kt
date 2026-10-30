@@ -70,10 +70,10 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val statusMsg = when {
-                allDevices.isNotEmpty() -> "Dispositivo pronto. Seleziona e avvia il benchmark metrologico."
-                !hasPerms -> "Richiesti permessi Bluetooth per scansionare adattatori wireless"
-                !btEnabled -> "Bluetooth disattivato sullo smartphone. Collega cavo USB o attiva BT."
-                else -> "Nessun dispositivo Bluetooth o USB trovato. Collega il cavo KKL USB OTG o usa 'Scansiona'."
+                allDevices.isNotEmpty() -> "Adapter ready. Select it and start the benchmark."
+                !hasPerms -> "Bluetooth permissions required to scan wireless adapters"
+                !btEnabled -> "Bluetooth is disabled. Connect a USB KKL cable or enable Bluetooth."
+                else -> "No adapters found. Connect a USB OTG KKL cable or tap Scan."
             }
 
             currentState.copy(
@@ -99,7 +99,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 currentState.copy(
                     pairedDevices = allDevs,
                     selectedDevice = currentState.selectedDevice ?: allDevs.firstOrNull(),
-                    statusMessage = "Trovati ${usbDevices.size} dispositivi USB. Per Bluetooth abilita permessi e Bluetooth."
+                    statusMessage = "Found ${usbDevices.size} USB adapters. Enable Bluetooth and permissions for wireless scanning."
                 )
             }
             return
@@ -108,7 +108,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 isScanning = true,
-                statusMessage = "Scansione dispositivi Bluetooth Classic, BLE e USB FTDI in corso..."
+                statusMessage = "Scanning Bluetooth Classic, BLE and USB FTDI adapters..."
             )
         }
 
@@ -133,7 +133,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     currentState.copy(
                         isScanning = false,
                         pairedDevices = combinedList,
-                        statusMessage = "Scansione completata. ${combinedList.size} dispositivi disponibili."
+                        statusMessage = "Scan complete. ${combinedList.size} adapters available."
                     )
                 }
             },
@@ -143,7 +143,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     currentState.copy(
                         isScanning = false,
                         pairedDevices = combinedList,
-                        statusMessage = "Scansione completata con errori: $errMsg"
+                        statusMessage = "Scan completed with errors: $errMsg"
                     )
                 }
             }
@@ -155,7 +155,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 isScanning = false,
-                statusMessage = "Scansione interrotta dall'utente."
+                statusMessage = "Scan stopped by user."
             )
         }
     }
@@ -249,8 +249,8 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
             if (driver == null) {
                 _uiState.update {
                     it.copy(
-                        status = BenchmarkStatus.Error("Dispositivo USB FTDI non trovato tra i dispositivi collegati."),
-                        statusMessage = "Errore: Cavo USB FTDI non rilevato."
+                        status = BenchmarkStatus.Error("USB FTDI adapter is no longer connected."),
+                        statusMessage = "Error: USB FTDI cable not detected."
                     )
                 }
                 return
@@ -260,7 +260,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         status = BenchmarkStatus.Connecting,
-                        statusMessage = "Richiesta autorizzazione USB per ${selectedDeviceItem.name}... Accetta il popup sullo schermo del telefono."
+                        statusMessage = "Requesting USB permission for ${selectedDeviceItem.name}. Accept the Android permission dialog."
                     )
                 }
 
@@ -298,7 +298,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 currentMetrics = null,
                 exportedCsvPath = null,
                 status = BenchmarkStatus.Connecting,
-                statusMessage = "Inizio benchmark USB K-Line [${selectedDeviceItem.name}] (${it.selectedRequestCount} campioni)..."
+                statusMessage = "Starting USB K-Line benchmark [${selectedDeviceItem.name}] (${it.selectedRequestCount} samples/test)..."
             )
         }
 
@@ -331,7 +331,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                             currentMetrics = metrics,
                             exportedCsvPath = autoCsvFile.absolutePath,
                             status = BenchmarkStatus.Completed,
-                            statusMessage = "Benchmark completato! CSV salvato: ${autoCsvFile.name}"
+                            statusMessage = "Benchmark complete. CSV saved: ${autoCsvFile.name}"
                         )
                     }
                 } catch (e: Exception) {
@@ -339,7 +339,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             currentMetrics = metrics,
                             status = BenchmarkStatus.Completed,
-                            statusMessage = "Benchmark completato! (Errore salvataggio CSV: ${e.message})"
+                            statusMessage = "Benchmark complete, but CSV saving failed: ${e.message}"
                         )
                     }
                 }
@@ -353,7 +353,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         status = BenchmarkStatus.Cancelled,
-                        statusMessage = "Benchmark interrotto dall'utente"
+                        statusMessage = "Benchmark stopped by user"
                     )
                 }
             } catch (e: Exception) {
@@ -365,8 +365,8 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 _uiState.update {
                     it.copy(
-                        status = BenchmarkStatus.Error(e.message ?: "Errore di comunicazione USB"),
-                        statusMessage = "Errore USB: ${e.message}"
+                        status = BenchmarkStatus.Error(e.message ?: "USB communication error"),
+                        statusMessage = "USB error: ${e.message}"
                     )
                 }
             }
@@ -383,7 +383,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 currentMetrics = null,
                 exportedCsvPath = null,
                 status = BenchmarkStatus.Connecting,
-                statusMessage = "Inizio benchmark Bluetooth [${selectedDeviceItem.name}] (${it.selectedRequestCount} campioni)..."
+                statusMessage = "Starting Bluetooth benchmark [${selectedDeviceItem.name}] (${it.selectedRequestCount} samples/test)..."
             )
         }
 
@@ -395,7 +395,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val currentConfig = _uiState.value
                 val bluetoothDevice = bluetoothManager.getDeviceByAddress(selectedDeviceItem.address)
-                    ?: throw IllegalStateException("Dispositivo Bluetooth ${selectedDeviceItem.name} non trovato.")
+                    ?: throw IllegalStateException("Bluetooth adapter ${selectedDeviceItem.name} not found.")
 
                 val metrics = benchmarkEngine.runBenchmark(
                     context = getApplication(),
@@ -420,7 +420,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                             currentMetrics = metrics,
                             exportedCsvPath = autoCsvFile.absolutePath,
                             status = BenchmarkStatus.Completed,
-                            statusMessage = "Benchmark completato! CSV salvato: ${autoCsvFile.name}"
+                            statusMessage = "Benchmark complete. CSV saved: ${autoCsvFile.name}"
                         )
                     }
                 } catch (e: Exception) {
@@ -428,7 +428,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             currentMetrics = metrics,
                             status = BenchmarkStatus.Completed,
-                            statusMessage = "Benchmark completato! (Errore salvataggio CSV: ${e.message})"
+                            statusMessage = "Benchmark complete, but CSV saving failed: ${e.message}"
                         )
                     }
                 }
@@ -442,7 +442,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         status = BenchmarkStatus.Cancelled,
-                        statusMessage = "Benchmark interrotto dall'utente"
+                        statusMessage = "Benchmark stopped by user"
                     )
                 }
             } catch (e: Exception) {
@@ -454,8 +454,8 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 _uiState.update {
                     it.copy(
-                        status = BenchmarkStatus.Error(e.message ?: "Errore di comunicazione"),
-                        statusMessage = "Errore: ${e.message}"
+                        status = BenchmarkStatus.Error(e.message ?: "Communication error"),
+                        statusMessage = "Error: ${e.message}"
                     )
                 }
             }
@@ -469,7 +469,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 status = BenchmarkStatus.Cancelled,
-                statusMessage = "Benchmark interrotto dall'utente"
+                statusMessage = "Benchmark stopped by user"
             )
         }
     }
@@ -500,7 +500,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(exportedCsvPath = csvFile.absolutePath) }
             csvFile
         } catch (e: Exception) {
-            _uiState.update { it.copy(statusMessage = "Errore esportazione CSV: ${e.message}") }
+            _uiState.update { it.copy(statusMessage = "CSV export error: ${e.message}") }
             null
         }
     }
