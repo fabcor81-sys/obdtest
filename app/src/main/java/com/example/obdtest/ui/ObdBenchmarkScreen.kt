@@ -53,6 +53,7 @@ fun ObdBenchmarkScreen(
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
     onSelectRequestCount: (Int) -> Unit,
+    onToggleAbsPumpOffAuthorization: (Boolean) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit,
     onSaveComparison: () -> Unit,
@@ -222,10 +223,12 @@ fun ObdBenchmarkScreen(
                             selectedProfile = uiState.selectedProfile,
                             selectedRequestCount = uiState.selectedRequestCount,
                             isUsbDevice = uiState.selectedDevice?.isUsb == true,
+                            isAbsPumpOffAuthorized = uiState.isAbsPumpOffAuthorized,
                             isDeviceSelected = usableDevice && validProfile,
                             onSelectTransportMode = onSelectTransportMode,
                             onSelectProfile = onSelectProfile,
                             onSelectRequestCount = onSelectRequestCount,
+                            onToggleAbsPumpOffAuthorization = onToggleAbsPumpOffAuthorization,
                             onStartTest = {
                                 if (usableDevice && validProfile && !running) {
                                     onStartTest()
@@ -563,198 +566,187 @@ fun TestControlCard(
     statusMessage: String,
     selectedTransportMode: TransportMode,
     selectedProfile: ObdProfile,
+    selectedRequestCount: Int,
+    isUsbDevice: Boolean,
     isAbsPumpOffAuthorized: Boolean,
     isDeviceSelected: Boolean,
     onSelectTransportMode: (TransportMode) -> Unit,
     onSelectProfile: (ObdProfile) -> Unit,
+    onSelectRequestCount: (Int) -> Unit,
     onToggleAbsPumpOffAuthorization: (Boolean) -> Unit,
     onStartTest: () -> Unit,
     onStopTest: () -> Unit
 ) {
-    val isTesting = status !is BenchmarkStatus.Idle &&
-            status !is BenchmarkStatus.Completed &&
-            status !is BenchmarkStatus.Cancelled &&
-            status !is BenchmarkStatus.Error
+    val running = BenchmarkUiPolicy.isBusy(status)
+    var confirmPumpOff by remember { mutableStateOf(false) }
+
+    if (confirmPumpOff) {
+        AlertDialog(
+            onDismissRequest = { confirmPumpOff = false },
+            title = { Text("Optional ABS Pump OFF test") },
+            text = {
+                Text(
+                    "For the Lotus ABS profile only, run one additional 30 02 07 00 (Pump OFF) " +
+                        "command at the end of this benchmark? This addresses the ABS actuator system. " +
+                        "Use only on a stationary vehicle in a controlled diagnostic setup. " +
+                        "Authorization applies to this run only."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirmPumpOff = false
+                    onToggleAbsPumpOffAuthorization(true)
+                }) { Text("ENABLE ONE TEST") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmPumpOff = false }) { Text("Cancel") }
+            }
+        )
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = RacingSurface
-        )
+        colors = CardDefaults.cardColors(containerColor = RacingSurface)
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Riga 1: Tipo Trasporto Bluetooth Compattato (AUTO, BT, BT BLE)
-            Text(
-                text = "TRASPORTO BLUETOOTH",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = RacingYellow
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                TransportMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = selectedTransportMode == mode,
-                        onClick = { if (!isTesting) onSelectTransportMode(mode) },
-                        label = { Text(mode.label, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (selectedTransportMode == mode) RacingBackground else RacingText) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = RacingYellow,
-                            containerColor = RacingSurfaceSecondary
-                        ),
-                        enabled = !isTesting,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            // Riga 2: Profilo OBD / Protocollo Affiancati Orizzontalmente
-            Text(
-                text = "PROFILO OBD / PROTOCOLLO",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = RacingYellow
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                ObdProfile.entries.forEach { profile ->
-                    val shortLabel = when (profile) {
-                        ObdProfile.AT_ONLY -> "AT-Only"
-                        ObdProfile.GENERIC_AUTO -> "OBD Standard"
-                        ObdProfile.LOTUS_ABS -> "Lotus ABS"
-                        ObdProfile.USB_KLINE_DIAG -> "USB Diag"
-                    }
-                    FilterChip(
-                        selected = selectedProfile == profile,
-                        onClick = { if (!isTesting) onSelectProfile(profile) },
-                        label = { Text(shortLabel, fontSize = 9.sp, color = if (selectedProfile == profile) RacingBackground else RacingText) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = RacingYellow,
-                            containerColor = RacingSurfaceSecondary
-                        ),
-                        enabled = !isTesting,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            // Flag/Switch per abilitare il comando ABS Pompa OFF (30 02 07 00)
-            if (selectedProfile == ObdProfile.LOTUS_ABS) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = RacingSurfaceSecondary,
-                    modifier = Modifier.fillMaxWidth()
+            Text("TRANSPORT", fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold, color = RacingYellow)
+            if (isUsbDevice) {
+                Text("USB K-Line FTDI — direct serial connection",
+                    color = RacingText, fontSize = 14.sp)
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    listOf(TransportMode.AUTO, TransportMode.CLASSIC_SPP, TransportMode.BLE_GATT)
+                        .forEach { mode ->
+                            FilterChip(
+                                selected = selectedTransportMode == mode,
+                                onClick = { onSelectTransportMode(mode) },
+                                enabled = !running,
+                                label = { Text(mode.label, fontSize = 12.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = RacingYellow,
+                                    selectedLabelColor = RacingBackground,
+                                    containerColor = RacingSurfaceSecondary,
+                                    labelColor = RacingText
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                }
+            }
+
+            Text("BENCHMARK PROFILE", fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold, color = RacingYellow)
+            val validProfiles = if (isUsbDevice) {
+                listOf(ObdProfile.USB_KLINE_DIAG, ObdProfile.LOTUS_ABS)
+            } else {
+                listOf(ObdProfile.AT_ONLY, ObdProfile.GENERIC_AUTO, ObdProfile.LOTUS_ABS)
+            }
+            validProfiles.forEach { profile ->
+                val shortName = when (profile) {
+                    ObdProfile.AT_ONLY -> "ELM327 — AT only"
+                    ObdProfile.GENERIC_AUTO -> "Generic OBD2"
+                    ObdProfile.LOTUS_ABS -> "Lotus EBC430 ABS"
+                    ObdProfile.USB_KLINE_DIAG -> "USB K-Line — ECU ID"
+                }
+                OutlinedButton(
+                    onClick = { onSelectProfile(profile) },
+                    enabled = !running,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        if (profile == selectedProfile) 2.dp else 1.dp,
+                        if (profile == selectedProfile) RacingYellow else RacingTextSecondary
+                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (profile == selectedProfile) RacingSurfaceSecondary else RacingSurface,
+                        contentColor = RacingText
+                    )
+                ) {
+                    Text(shortName, modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
+                    if (profile == selectedProfile)
+                        Icon(Icons.Default.Check, contentDescription = "Selected", tint = RacingYellow)
+                }
+            }
+
+            Text("SAMPLES PER TEST", fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold, color = RacingYellow)
+            Row(modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(25, 50, 100, 250).forEach { count ->
+                    FilterChip(
+                        selected = selectedRequestCount == count,
+                        enabled = !running && selectedProfile != ObdProfile.USB_KLINE_DIAG,
+                        onClick = { onSelectRequestCount(count) },
+                        label = { Text("$count", fontSize = 12.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = RacingYellow,
+                            selectedLabelColor = RacingBackground,
+                            containerColor = RacingSurfaceSecondary,
+                            labelColor = RacingText
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            if (selectedProfile == ObdProfile.USB_KLINE_DIAG) {
+                Text("USB K-Line diagnostic mode always performs one ECU identification request.",
+                    color = RacingTextSecondary, fontSize = 12.sp)
+            }
+
+            if (selectedProfile == ObdProfile.LOTUS_ABS && !isUsbDevice) {
+                Surface(shape = RoundedCornerShape(8.dp), color = RacingSurfaceSecondary) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Abilita Test 6: Pompa ABS OFF (30 02 07 00)",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isAbsPumpOffAuthorized) RacingYellow else RacingTextSecondary,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text("OPTIONAL TEST 6 — ABS PUMP OFF", color = RacingYellow,
+                                fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("One 30 02 07 00 command; explicit one-run opt-in.",
+                                color = RacingTextSecondary, fontSize = 12.sp)
+                        }
                         Switch(
                             checked = isAbsPumpOffAuthorized,
-                            onCheckedChange = { if (!isTesting) onToggleAbsPumpOffAuthorization(it) },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = RacingYellow,
-                                checkedTrackColor = RacingSurfaceSecondary
-                            ),
-                            enabled = !isTesting,
-                            modifier = Modifier.height(24.dp)
+                            onCheckedChange = { enabled ->
+                                if (enabled) confirmPumpOff = true
+                                else onToggleAbsPumpOffAuthorization(false)
+                            },
+                            enabled = !running,
+                            colors = SwitchDefaults.colors(checkedThumbColor = RacingYellow)
                         )
                     }
                 }
             }
 
             HorizontalDivider(color = RacingSurfaceSecondary)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = statusMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = RacingText,
-                    modifier = Modifier.weight(1f)
-                )
-
-                if (isTesting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = RacingYellow
+            Text(statusMessage, fontSize = 13.sp,
+                color = if (status is BenchmarkStatus.Error) RacingError else RacingTextSecondary)
+            if (!running) {
+                Button(
+                    onClick = onStartTest,
+                    enabled = isDeviceSelected,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = RacingYellow,
+                        contentColor = RacingBackground,
+                        disabledContainerColor = RacingSurfaceSecondary,
+                        disabledContentColor = RacingTextSecondary
                     )
+                ) {
+                    Icon(Icons.Default.Speed, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("START BENCHMARK", fontWeight = FontWeight.Bold)
                 }
-            }
-
-            if (status is BenchmarkStatus.RunningTestSequence) {
-                val progress = status.completedRequests.toFloat() / status.targetRequests.toFloat()
-                LinearProgressIndicator(
-                    progress = { progress },
-                    color = RacingYellow,
-                    trackColor = RacingSurfaceSecondary,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            // UNICO GRANDE PULSANTE D'AZIONE COMPATTO
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (isTesting) {
-                    Button(
-                        onClick = onStopTest,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = RacingError,
-                            contentColor = RacingText
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                    ) {
-                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("ARRESTA BENCHMARK (STOP)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                } else {
-                    Button(
-                        onClick = onStartTest,
-                        enabled = isDeviceSelected,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = RacingYellow,
-                            contentColor = RacingBackground,
-                            disabledContainerColor = RacingSurfaceSecondary,
-                            disabledContentColor = RacingTextSecondary
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                    ) {
-                        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("AVVIA BENCHMARK METROLOGICO", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                }
+            } else {
+                Text("Benchmark in progress. Use STOP at the top of the screen.",
+                    color = RacingYellow, fontSize = 12.sp)
             }
         }
     }
