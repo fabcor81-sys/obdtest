@@ -280,10 +280,11 @@ fun ObdBenchmarkScreen(
                                 color = RacingTextSecondary, fontSize = 12.sp
                             )
                         }
-                        ConsoleLogsCard(logs = uiState.logs, modifier = Modifier.fillMaxWidth())
                     }
                 }
             }
+
+            ConsoleLogsCard(logs = uiState.logs, modifier = Modifier.fillMaxWidth())
 
             if (!running) {
                 Row(
