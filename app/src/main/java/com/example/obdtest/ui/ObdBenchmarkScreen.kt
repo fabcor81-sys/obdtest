@@ -184,9 +184,9 @@ fun ObdBenchmarkScreen(
                                 "permissions and an enabled radio.",
                             color = RacingTextSecondary, fontSize = 13.sp
                         )
-                        if (!uiState.hasPermissions) {
+                        if (!uiState.hasPermissions && uiState.selectedDevice?.isUsb != true) {
                             PermissionRequiredCard(onRequestPermissions)
-                        } else if (!uiState.isBluetoothEnabled) {
+                        } else if (!uiState.isBluetoothEnabled && uiState.selectedDevice?.isUsb != true) {
                             BluetoothDisabledCard(onRefreshDevices)
                         }
                         DeviceSelectorCard(
@@ -922,115 +922,72 @@ fun ComparisonCard(
     currentMetrics: BenchmarkMetrics,
     onClearComparison: () -> Unit
 ) {
-    val isDifferentConfig = baselineMetrics.obdProfile != currentMetrics.obdProfile ||
-            baselineMetrics.effectiveTransport != currentMetrics.effectiveTransport
-
-    val p50Diff = currentMetrics.p50Ms - baselineMetrics.p50Ms
-    val p50Percent = if (baselineMetrics.p50Ms > 0) {
-        ((p50Diff / baselineMetrics.p50Ms) * 100).toInt()
-    } else 0
-
-    val pidsDiff = currentMetrics.commandsPerSecond - baselineMetrics.commandsPerSecond
-    val pidsPercent = if (baselineMetrics.commandsPerSecond > 0) {
-        ((pidsDiff / baselineMetrics.commandsPerSecond) * 100).toInt()
-    } else 0
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = RacingSurfaceSecondary
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "CONFRONTO PRESTAZIONI",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = RacingYellow
-                )
-
+    val comparable = BenchmarkUiPolicy.comparable(baselineMetrics, currentMetrics)
+    Card(modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = RacingSurfaceSecondary)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("ADAPTER COMPARISON", fontWeight = FontWeight.ExtraBold,
+                    color = RacingYellow, fontSize = 15.sp)
                 TextButton(onClick = onClearComparison) {
-                    Text("Cancella", fontSize = 11.sp, color = RacingTextSecondary)
+                    Text("Clear baseline", color = RacingTextSecondary, fontSize = 12.sp)
                 }
             }
-
-            if (isDifferentConfig) {
+            if (!comparable) {
+                Surface(color = RacingSurface, shape = RoundedCornerShape(8.dp)) {
+                    Text(
+                        "NOT DIRECTLY COMPARABLE: both runs must be complete and successful, " +
+                            "with the same profile, transport, command and sample count. " +
+                            "Only raw metrics are shown below.",
+                        color = RacingError, fontSize = 13.sp, modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+            listOf("BASELINE" to baselineMetrics, "CURRENT" to currentMetrics)
+                .forEach { (title, metrics) ->
+                    Surface(color = RacingSurface, shape = RoundedCornerShape(8.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("$title • ${metrics.deviceName}", fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold, color = RacingYellow)
+                            Text(
+                                "${metrics.effectiveTransport.label} • ${metrics.obdProfile.label} • " +
+                                    "${metrics.targetRequestCount} samples/test",
+                                color = RacingTextSecondary, fontSize = 12.sp
+                            )
+                            Text(
+                                "P50 ${String.format(Locale.US, "%.1f", metrics.p50Ms)} ms • " +
+                                    "${String.format(Locale.US, "%.1f", metrics.commandsPerSecond)} cmd/s • " +
+                                    "${String.format(Locale.US, "%.1f", metrics.successRatePercent)}% success",
+                                color = RacingText, fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            if (comparable) {
+                val p50Delta = currentMetrics.p50Ms - baselineMetrics.p50Ms
+                val throughputDelta = currentMetrics.commandsPerSecond - baselineMetrics.commandsPerSecond
+                val p50Percent = if (baselineMetrics.p50Ms > 0)
+                    p50Delta / baselineMetrics.p50Ms * 100.0 else 0.0
+                val throughputPercent = if (baselineMetrics.commandsPerSecond > 0)
+                    throughputDelta / baselineMetrics.commandsPerSecond * 100.0 else 0.0
+                HorizontalDivider(color = RacingSurface)
+                Text("CHANGE VS BASELINE", color = RacingYellow,
+                    fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 Text(
-                    text = "⚠️ Avviso: I test usano configurazioni o trasporti differenti (${baselineMetrics.effectiveTransport.label}/${baselineMetrics.obdProfile.label} vs ${currentMetrics.effectiveTransport.label}/${currentMetrics.obdProfile.label})",
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = RacingError
+                    "P50 latency: ${String.format(Locale.US, "%+.1f", p50Delta)} ms " +
+                        "(${String.format(Locale.US, "%+.1f", p50Percent)}%)",
+                    color = if (p50Delta <= 0) RacingSuccess else RacingError,
+                    fontWeight = FontWeight.Bold, fontSize = 14.sp
                 )
-            }
-
-            HorizontalDivider(color = RacingSurface)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("RIFERIMENTO (${baselineMetrics.deviceName})", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
-                    Text("P50: ${String.format(Locale.US, "%.1f", baselineMetrics.p50Ms)} ms", fontSize = 10.sp, color = RacingText)
-                    Text("Successo: ${String.format(Locale.US, "%.1f", baselineMetrics.successRatePercent)}%", fontSize = 9.sp, color = RacingTextSecondary)
-                    Text("${String.format(Locale.US, "%.1f", baselineMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow, fontSize = 11.sp)
-                }
-
-                Text("VS", fontWeight = FontWeight.Black, fontSize = 14.sp, color = RacingYellow)
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("ATTUALE (${currentMetrics.deviceName})", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = RacingTextSecondary)
-                    Text("P50: ${String.format(Locale.US, "%.1f", currentMetrics.p50Ms)} ms", fontSize = 10.sp, color = RacingText)
-                    Text("Successo: ${String.format(Locale.US, "%.1f", currentMetrics.successRatePercent)}%", fontSize = 9.sp, color = RacingTextSecondary)
-                    Text("${String.format(Locale.US, "%.1f", currentMetrics.commandsPerSecond)} PID/s", fontWeight = FontWeight.Bold, color = RacingYellow, fontSize = 11.sp)
-                }
-            }
-
-            HorizontalDivider(color = RacingSurface)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceAround
-            ) {
-                val p50Text = if (p50Diff <= 0) {
-                    "${kotlin.math.abs(p50Percent)}% più veloce (-${String.format(Locale.US, "%.1f", kotlin.math.abs(p50Diff))}ms)"
-                } else {
-                    "${p50Percent}% più lento (+${String.format(Locale.US, "%.1f", p50Diff)}ms)"
-                }
-
-                val pidsText = if (pidsDiff >= 0) {
-                    "+${pidsPercent}% PID/s (+${String.format(Locale.US, "%.1f", pidsDiff)})"
-                } else {
-                    "${pidsPercent}% PID/s (${String.format(Locale.US, "%.1f", pidsDiff)})"
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Diff. P50 Mediana", fontSize = 9.sp, color = RacingTextSecondary)
-                    Text(
-                        text = p50Text,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (p50Diff <= 0) RacingSuccess else RacingError
-                    )
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Diff. Velocità", fontSize = 9.sp, color = RacingTextSecondary)
-                    Text(
-                        text = pidsText,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (pidsDiff >= 0) RacingSuccess else RacingError
-                    )
-                }
+                Text(
+                    "Throughput: ${String.format(Locale.US, "%+.1f", throughputDelta)} cmd/s " +
+                        "(${String.format(Locale.US, "%+.1f", throughputPercent)}%)",
+                    color = if (throughputDelta >= 0) RacingSuccess else RacingError,
+                    fontWeight = FontWeight.Bold, fontSize = 14.sp
+                )
             }
         }
     }
