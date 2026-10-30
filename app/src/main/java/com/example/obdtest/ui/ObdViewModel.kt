@@ -48,6 +48,15 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         val allDevices = usbDevices + btPaired
 
         _uiState.update { currentState ->
+            if (BenchmarkUiPolicy.isBusy(currentState.status)) {
+                // A resume/USB hotplug refresh must not silently change the
+                // target device or overwrite a running benchmark's status.
+                return@update currentState.copy(
+                    pairedDevices = allDevices,
+                    hasPermissions = hasPerms,
+                    isBluetoothEnabled = btEnabled
+                )
+            }
             val currentSelected = currentState.selectedDevice
             val stillPresent = allDevices.find { it.address == currentSelected?.address }
             val newlySelected = stillPresent ?: allDevices.firstOrNull()
@@ -73,12 +82,15 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                 pairedDevices = allDevices,
                 selectedDevice = newlySelected,
                 selectedTransportMode = selectedMode,
+                selectedProfile = BenchmarkUiPolicy.correctedProfile(newlySelected, currentState.selectedProfile),
+                isAbsPumpOffAuthorized = false,
                 statusMessage = statusMsg
             )
         }
     }
 
     fun startDeviceScan() {
+        if (BenchmarkUiPolicy.isBusy(_uiState.value.status)) return
         val usbDevices = usbKLineManager.getConnectedUsbDevices()
 
         if (!_uiState.value.hasPermissions || !_uiState.value.isBluetoothEnabled) {
@@ -149,6 +161,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectDevice(device: BluetoothDeviceItem) {
+        if (BenchmarkUiPolicy.isBusy(_uiState.value.status)) return
         val targetTransport = if (device.isUsb) {
             TransportMode.USB_KLINE
         } else if (_uiState.value.selectedTransportMode == TransportMode.USB_KLINE) {
@@ -160,20 +173,30 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 selectedDevice = device,
-                selectedTransportMode = targetTransport
+                selectedTransportMode = targetTransport,
+                selectedProfile = BenchmarkUiPolicy.correctedProfile(device, it.selectedProfile),
+                isAbsPumpOffAuthorized = false
             )
         }
     }
 
     fun selectTransportMode(transportMode: TransportMode) {
-        _uiState.update { it.copy(selectedTransportMode = transportMode) }
+        _uiState.update {
+            if (BenchmarkUiPolicy.isBusy(it.status)) it
+            else if (it.selectedDevice?.isUsb == true) it.copy(selectedTransportMode = TransportMode.USB_KLINE)
+            else if (transportMode == TransportMode.USB_KLINE) it
+            else it.copy(selectedTransportMode = transportMode)
+        }
     }
 
     fun selectObdProfile(profile: ObdProfile) {
         _uiState.update {
-            it.copy(
+            if (BenchmarkUiPolicy.isBusy(it.status) ||
+                !BenchmarkUiPolicy.supportsProfile(it.selectedDevice, profile)) it
+            else it.copy(
                 selectedProfile = profile,
-                customCommand = profile.defaultCommand
+                customCommand = profile.defaultCommand,
+                isAbsPumpOffAuthorized = false
             )
         }
     }
@@ -183,19 +206,37 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectRequestCount(count: Int) {
-        _uiState.update { it.copy(selectedRequestCount = count) }
+        if (count !in listOf(25, 50, 100, 250)) return
+        _uiState.update {
+            if (BenchmarkUiPolicy.isBusy(it.status)) it
+            else it.copy(selectedRequestCount = count)
+        }
     }
 
+    // OBD Test is deliberately read-only. Actuator commands belong in
+    // dedicated service software, not a latency benchmarking sequence.
     fun toggleAbsPumpOffAuthorization(authorized: Boolean) {
-        _uiState.update { it.copy(isAbsPumpOffAuthorized = authorized) }
+        _uiState.update { it.copy(isAbsPumpOffAuthorized = false) }
     }
 
     fun startBenchmarkTest() {
+        val current = _uiState.value
+        if (BenchmarkUiPolicy.isBusy(current.status)) return
+        val selectedDeviceItem = current.selectedDevice ?: return
+        if (!BenchmarkUiPolicy.canRun(selectedDeviceItem, current.hasPermissions, current.isBluetoothEnabled) ||
+            !BenchmarkUiPolicy.supportsProfile(selectedDeviceItem, current.selectedProfile)
+        ) {
+            _uiState.update {
+                it.copy(
+                    status = BenchmarkStatus.Error("Selected device, profile or Bluetooth permissions are incompatible."),
+                    statusMessage = "Check your device and benchmark profile before starting."
+                )
+            }
+            return
+        }
         bluetoothManager.stopDiscovery()
-
-        val selectedDeviceItem = _uiState.value.selectedDevice ?: return
-
         benchmarkEngine.clearLogs()
+        _uiState.update { it.copy(isAbsPumpOffAuthorized = false) }
 
         if (selectedDeviceItem.isUsb) {
             val driver = usbKLineManager.findUsbDriverForAddress(selectedDeviceItem.address)
@@ -347,7 +388,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
                     transportMode = currentConfig.selectedTransportMode,
                     obdProfile = currentConfig.selectedProfile,
                     targetRequestCount = currentConfig.selectedRequestCount,
-                    isAbsPumpOffAuthorized = currentConfig.isAbsPumpOffAuthorized,
+                    isAbsPumpOffAuthorized = false,
                     timeoutMs = ObdBenchmarkEngine.DEFAULT_TIMEOUT_MS,
                     onStatusUpdate = { status, msg ->
                         _uiState.update { it.copy(status = status, statusMessage = msg) }
@@ -407,6 +448,7 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopBenchmarkTest() {
+        if (!BenchmarkUiPolicy.isBusy(_uiState.value.status)) return
         benchmarkEngine.stop()
         benchmarkJob?.cancel()
         _uiState.update {
@@ -418,8 +460,17 @@ class ObdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveCurrentMetricsForComparison() {
+        if (BenchmarkUiPolicy.isBusy(_uiState.value.status)) return
         _uiState.value.currentMetrics?.let { metrics ->
-            _uiState.update { it.copy(savedComparisonMetrics = metrics) }
+            if (metrics.isPartialSession || metrics.successCount == 0) {
+                _uiState.update {
+                    it.copy(statusMessage = "Only completed benchmarks with verified responses can be saved as a baseline.")
+                }
+            } else {
+                _uiState.update {
+                    it.copy(savedComparisonMetrics = metrics, statusMessage = "Baseline saved: ${metrics.deviceName}")
+                }
+            }
         }
     }
 
