@@ -45,10 +45,10 @@ class BenchmarkNavigationTest {
     }
 
     @Test fun consoleIsReachableFromEveryTab() {
-        rule.onNodeWithText("CONSOLE LOGS (").assertIsDisplayed()
+        rule.onNodeWithText("CONSOLE LOGS", substring = true).assertIsDisplayed()
         rule.onNodeWithText("2. Benchmark").performClick()
-        rule.onNodeWithText("CONSOLE LOGS (").assertIsDisplayed()
+        rule.onNodeWithText("CONSOLE LOGS", substring = true).assertIsDisplayed()
         rule.onNodeWithText("3. Results").performClick()
-        rule.onNodeWithText("CONSOLE LOGS (").assertIsDisplayed()
+        rule.onNodeWithText("CONSOLE LOGS", substring = true).assertIsDisplayed()
     }
 }
