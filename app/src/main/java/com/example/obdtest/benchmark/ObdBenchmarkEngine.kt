@@ -164,7 +164,7 @@ class ObdBenchmarkEngine {
             obdProfile = obdProfile,
             targetRequestCount = targetRequestCount,
             warmupRequestCount = warmupCount,
-            isAbsPumpOffAuthorized = isAbsPumpOffAuthorized,
+            isAbsPumpOffAuthorized = false,
             timeoutMs = timeoutMs
         )
 
@@ -172,20 +172,9 @@ class ObdBenchmarkEngine {
         val testSummaries = mutableListOf<SingleTestSummary>()
         val connectionStartMs = SystemClock.elapsedRealtime()
 
-        val testSequence = listOf(
-            BenchmarkTestDefinition("1. Identificazione ELM", "ATI\r", targetRequestCount),
-            BenchmarkTestDefinition("2. Test diagnostico precedente", "0100\r", targetRequestCount),
-            BenchmarkTestDefinition("3. ECU Identification", "1A80\r", targetRequestCount),
-            BenchmarkTestDefinition("4. Battery Voltage", "2101\r", targetRequestCount),
-            BenchmarkTestDefinition("5. ABS Status", "2102\r", targetRequestCount),
-            BenchmarkTestDefinition(
-                name = "6. ABS Pump OFF",
-                command = "30020700\r",
-                repetitions = 1,
-                isSingleExecution = true,
-                requiresAuthorization = true
-            )
-        )
+        // Test plans are strictly read-only. ABS Pump OFF is intentionally
+        // excluded from OBD Test; never treat it as a latency benchmark.
+        val testSequence = BenchmarkReadOnlyPlan.bluetooth(obdProfile, targetRequestCount)
 
         try {
             log("=== OBD2 BENCHMARK ENGINE ${com.example.obdtest.AppVersion.FULL_VERSION_STRING} ===")
@@ -338,47 +327,12 @@ class ObdBenchmarkEngine {
 
             // ESECUZIONE SEQUENZA AUTOMATICA DEI 6 TEST
             val testStartNanos = SystemClock.elapsedRealtimeNanos()
-            val activeTestSequence = if (obdProfile == ObdProfile.AT_ONLY) {
-                listOf(BenchmarkTestDefinition("1. Identificazione ELM", "ATI\r", targetRequestCount))
-            } else {
-                testSequence
-            }
+            val activeTestSequence = testSequence
 
             for ((testIdx, testDef) in activeTestSequence.withIndex()) {
                 if (!isRunning || currentSessionId != activeSessionId) break
                 coroutineContext.ensureActive()
 
-                if (testDef.requiresAuthorization && !isAbsPumpOffAuthorized) {
-                    log("TEST SKIPPED: ${testDef.name} - Autorizzazione non concessa o non verificata.", isError = false)
-                    testSummaries.add(
-                        SingleTestSummary(
-                            testName = testDef.name,
-                            commandSent = testDef.command.trim(),
-                            samplesRequested = 1,
-                            samplesExecuted = 0,
-                            positiveResponses = 0,
-                            negativeResponses = 0,
-                            unexpectedResponses = 0,
-                            timeouts = 0,
-                            adapterErrors = 0,
-                            minLatencyMs = 0.0,
-                            avgLatencyMs = 0.0,
-                            maxLatencyMs = 0.0,
-                            p50Ms = 0.0,
-                            p95Ms = 0.0,
-                            p99Ms = 0.0,
-                            stdDevMs = 0.0,
-                            jitterMs = 0.0,
-                            avgInterRequestIntervalMs = 0.0,
-                            commandsPerSecond = 0.0,
-                            percentUnder30ms = 0.0,
-                            percentUnder40ms = 0.0,
-                            isSingleExecution = true,
-                            singleExecutionResult = "NOT_VERIFIED / SKIPPED"
-                        )
-                    )
-                    continue
-                }
 
                 log("=== AVVIO TEST ${testIdx + 1}/${activeTestSequence.size}: ${testDef.name} (${testDef.command.trim()}) ===")
                 val testSamples = mutableListOf<CommandTimingSample>()
@@ -535,16 +489,7 @@ class ObdBenchmarkEngine {
 
             coroutineContext.ensureActive()
 
-            val testSequence = if (obdProfile == ObdProfile.USB_KLINE_DIAG) {
-                listOf(
-                    BenchmarkTestDefinition("1. ECU Identification", "1A80", repetitions = 1, isSingleExecution = true)
-                )
-            } else {
-                listOf(
-                    BenchmarkTestDefinition("1. ECU Identification", "1A80", targetRequestCount),
-                    BenchmarkTestDefinition("2. Read Data By Local Identifier", "2101", targetRequestCount)
-                )
-            }
+            val testSequence = BenchmarkReadOnlyPlan.usb(obdProfile, targetRequestCount)
 
             var lastSampleT3Nanos = SystemClock.elapsedRealtimeNanos()
 
