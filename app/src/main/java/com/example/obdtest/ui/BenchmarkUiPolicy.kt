@@ -34,5 +34,8 @@ object BenchmarkUiPolicy {
             baseline.obdProfile == candidate.obdProfile &&
             baseline.effectiveTransport == candidate.effectiveTransport &&
             baseline.measuredCommand.trim() == candidate.measuredCommand.trim() &&
-            baseline.targetRequestCount == candidate.targetRequestCount
+            baseline.targetRequestCount == candidate.targetRequestCount &&
+            baseline.isAbsPumpOffAuthorized == candidate.isAbsPumpOffAuthorized &&
+            baseline.testSummaries.map { it.commandSent.trim() } ==
+                candidate.testSummaries.map { it.commandSent.trim() }
 }
