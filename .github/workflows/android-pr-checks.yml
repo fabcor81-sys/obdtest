@@ -19,7 +19,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - uses: android-actions/setup-android@v3
       - name: Ensure Android SDK platform 37
         run: |
           SDK_MANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f -print -quit)"
