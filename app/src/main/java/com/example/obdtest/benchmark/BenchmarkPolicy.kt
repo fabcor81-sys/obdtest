@@ -1,6 +1,7 @@
 package com.example.obdtest.benchmark
 
 import com.example.obdtest.ui.TransportMode
+import com.example.obdtest.ui.ObdProfile
 import java.util.Locale
 
 data class RawCommandResult(
@@ -37,4 +38,49 @@ class MeasurementClock(private val nowNanos: () -> Long) {
     private var startedAt: Long? = null
     fun start() { startedAt = nowNanos() }
     fun elapsedMs(): Long = startedAt?.let { ((nowNanos() - it) / 1_000_000L).coerceAtLeast(0L) } ?: 0L
+}
+
+/**
+ * Explicit benchmark plans. Only the Lotus profile can optionally include
+ * the single ABS Pump OFF command; generic OBD benchmarks remain read-only.
+ */
+object BenchmarkTestPlan {
+    fun bluetooth(profile: ObdProfile, samples: Int, allowPumpOff: Boolean = false): List<BenchmarkTestDefinition> {
+        require(samples in 1..1000)
+        return when (profile) {
+            ObdProfile.AT_ONLY -> listOf(BenchmarkTestDefinition("ELM identification", "ATI\r", samples))
+            ObdProfile.GENERIC_AUTO -> listOf(
+                BenchmarkTestDefinition("ELM identification", "ATI\r", samples),
+                BenchmarkTestDefinition("Generic OBD PID 0100", "0100\r", samples)
+            )
+            ObdProfile.LOTUS_ABS -> listOf(
+                BenchmarkTestDefinition("ELM identification", "ATI\r", samples),
+                BenchmarkTestDefinition("ECU identification", "1A80\r", samples),
+                BenchmarkTestDefinition("Battery voltage", "2101\r", samples),
+                BenchmarkTestDefinition("ABS status", "2102\r", samples)
+            ) + if (allowPumpOff) listOf(
+                BenchmarkTestDefinition(
+                    "ABS Pump OFF (optional)", "30020700\r", 1,
+                    isSingleExecution = true, requiresAuthorization = true
+                )
+            ) else emptyList()
+            ObdProfile.USB_KLINE_DIAG -> error("USB K-Line profile cannot be used over Bluetooth")
+        }
+    }
+
+    fun usb(profile: ObdProfile, samples: Int): List<BenchmarkTestDefinition> {
+        require(samples in 1..1000)
+        return when (profile) {
+            ObdProfile.USB_KLINE_DIAG ->
+                listOf(BenchmarkTestDefinition("ECU identification", "1A80", 1, isSingleExecution = true))
+            ObdProfile.LOTUS_ABS -> listOf(
+                BenchmarkTestDefinition("ECU identification", "1A80", samples),
+                BenchmarkTestDefinition("Read local data", "2101", samples)
+            )
+            else -> error("Unsupported USB K-Line profile: ${profile.name}")
+        }
+    }
+
+    fun containsActuatorCommand(plan: List<BenchmarkTestDefinition>): Boolean =
+        plan.any { it.command.filterNot(Char::isWhitespace).startsWith("30") }
 }

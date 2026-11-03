@@ -31,7 +31,7 @@ class MainActivity : ComponentActivity() {
         } else {
             Toast.makeText(
                 this,
-                "Permessi Bluetooth o Posizione negati. Impossibile scansionare o connettersi.",
+                "Bluetooth or location permission denied. Wireless scanning and connection are unavailable.",
                 Toast.LENGTH_LONG
             ).show()
             viewModel.refreshBluetoothState()
@@ -76,6 +76,9 @@ class MainActivity : ComponentActivity() {
                         onSelectProfile = { profile ->
                             viewModel.selectObdProfile(profile)
                         },
+                        onSelectRequestCount = { count ->
+                            viewModel.selectRequestCount(count)
+                        },
                         onToggleAbsPumpOffAuthorization = { authorized ->
                             viewModel.toggleAbsPumpOffAuthorization(authorized)
                         },
@@ -87,7 +90,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onSaveComparison = {
                             viewModel.saveCurrentMetricsForComparison()
-                            Toast.makeText(this, "Risultato salvato come riferimento per il confronto!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, "Benchmark saved as comparison baseline.", Toast.LENGTH_SHORT).show()
                         },
                         onClearComparison = {
                             viewModel.clearComparisonMetrics()
@@ -107,12 +110,12 @@ class MainActivity : ComponentActivity() {
                                         putExtra(Intent.EXTRA_STREAM, uri)
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
-                                    startActivity(Intent.createChooser(shareIntent, "Condividi Report CSV Benchmark"))
+                                    startActivity(Intent.createChooser(shareIntent, "Share benchmark CSV report"))
                                 } catch (e: Exception) {
-                                    Toast.makeText(this, "Errore condivisione CSV: ${e.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this, "CSV sharing error: ${e.message}", Toast.LENGTH_LONG).show()
                                 }
                             } else {
-                                Toast.makeText(this, "Nessun dato di benchmark da esportare", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this, "No benchmark data available to export", Toast.LENGTH_SHORT).show()
                             }
                         }
                     )
